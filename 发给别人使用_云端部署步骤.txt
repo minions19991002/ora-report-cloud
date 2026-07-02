@@ -1,0 +1,31 @@
+目标：得到一个可以发给别人的公网链接。
+
+推荐方式：Render + GitHub
+
+1. 新建一个 GitHub 仓库，例如 ora-report-cloud。
+2. 把这个文件夹里的所有内容上传到 GitHub 仓库根目录：
+   - server
+   - static
+   - Dockerfile
+   - requirements.txt
+   - render.yaml
+   - README_DEPLOY.md
+3. 打开 https://render.com
+4. New + -> Web Service
+5. 连接你的 GitHub 仓库
+6. 选择 Docker 部署方式
+7. 创建服务并等待 Build / Deploy 完成
+8. Render 会给你一个公网地址，例如：
+   https://ora-report-cloud.onrender.com
+9. 把这个地址发给别人即可。
+
+别人使用时：
+1. 打开公网地址
+2. 上传 15 个表格
+3. 选择本期周期和上期周期
+4. 点击生成周报
+5. 等待服务器生成并下载 Excel
+
+说明：
+- 这个压缩包本身不能直接变成公网链接，必须部署到云平台。
+- 如果部署到免费服务，第一次打开可能会有冷启动等待。
