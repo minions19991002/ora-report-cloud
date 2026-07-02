@@ -1,3 +1,9 @@
+# ORA 外送报表云端生成工具
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/minions19991002/ora-report-cloud)
+
+> 免费部署：Render Free Web Service。空闲 15 分钟会休眠，第一次访问会等约 1 分钟唤醒；链接不会失效。
+
 # ORA 外送周报云端生成版
 
 这是服务器端生成版。浏览器只负责上传 15 个 Excel 和下载结果，Excel 处理在服务器 Python 环境中运行。
