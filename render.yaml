@@ -1,7 +1,12 @@
 services:
   - type: web
     name: ora-report-cloud
-    env: docker
+    env: python
     plan: free
     autoDeploy: false
+    buildCommand: python -m pip install --upgrade pip setuptools wheel && pip install --no-cache-dir -r requirements.txt
+    startCommand: python -m uvicorn server.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
