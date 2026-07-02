@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: ora-report-cloud
+    env: docker
+    plan: free
+    autoDeploy: false
+    healthCheckPath: /health
