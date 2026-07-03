@@ -14,6 +14,8 @@ const REQUIRED_FILES = [
   { key: "reviewSummary", title: "评价汇总", canonical: "评价汇总.xlsx", match: [/评价汇总/i] },
   { key: "reviewCounts", title: "好评数中差评", canonical: "好评数中差评数据.xlsx", match: [/好评数|中差评数据/i] },
   { key: "delivery", title: "美团平均配送时长", canonical: "美团平均配送时长.xlsx", match: [/平均配送时长|配送时长/i] },
+  { key: "oraDaily", title: "ORA外送日报", canonical: "Ora外送日报.xlsx", match: [/ora外送日报|外送日报/i] },
+  { key: "oraProduct", title: "ORA外送商品数据", canonical: "Ora外送商品数据.xlsx", match: [/ora外送商品数据|外送商品数据/i] },
 ];
 
 const HEADER_SIGNATURES = {
@@ -41,6 +43,8 @@ const HEADER_SIGNATURES = {
   reviewSummary: { all: ["平台", "一级分类", "二级分类", "统计"], sheetAny: ["双平台中差评汇总", "数据源"] },
   reviewCounts: { all: ["好评数", "中差评数"] },
   delivery: { all: ["平均配送时长"], any: ["美团门店ID", "门店ID", "门店名称"] },
+  oraDaily: { all: ["store_id", "sales_channel", "销售额", "订单数", "客单价", "优惠金额"], sheetAny: ["Ora外送日报"] },
+  oraProduct: { all: ["date_id", "sku_name", "store_id", "sales_channel", "quantity", "gross_amount"], sheetAny: ["Ora外送商品数据"] },
 };
 
 const XLSX_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
