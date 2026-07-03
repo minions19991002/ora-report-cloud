@@ -39,6 +39,8 @@ REQUIRED_FILES = {
     "reviewSummary": "ora_评价汇总_2026-06-15~2026-06-21.xlsx",
     "reviewCounts": "好评数中差评数据.xlsx",
     "delivery": "美团平均配送时长ora_自定义报表_2026-06-15_2026-06-21.xlsx",
+    "oraDaily": "Ora外送日报.xlsx",
+    "oraProduct": "Ora外送商品数据.xlsx",
 }
 
 ENV_KEYS = [
