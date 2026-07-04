@@ -992,6 +992,37 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         if name and cat and not str(cat).startswith("="):
             category_map[str(name)] = str(cat)
 
+    def load_ora_product_table() -> pd.DataFrame:
+        raw = read_excel("Ora外送商品数据.xlsx", sheet_name=0, header=None)
+        required = {"date_id", "sku_name", "quantity", "gross_amount"}
+        header_row: int | None = None
+        columns: list[str] = []
+        for idx, row in raw.head(20).iterrows():
+            values = ["" if pd.isna(value) else str(value).strip() for value in row.tolist()]
+            if required.issubset(set(values)):
+                header_row = int(idx)
+                columns = [value if value else f"__blank_{pos}" for pos, value in enumerate(values)]
+                break
+        if header_row is None:
+            raise KeyError("Ora外送商品数据缺少表头：date_id, sku_name, quantity, gross_amount")
+        out = raw.iloc[header_row + 1 :].copy()
+        out.columns = columns
+        return out[[col for col in out.columns if not str(col).startswith("__blank_")]]
+
+    def single_aggregate_from_ora_product() -> pd.DataFrame:
+        df = period_rows(load_ora_product_table(), "date_id", START, END)
+        df = df[df["sku_name"].notna()].copy()
+        df["_name"] = df["sku_name"].astype(str).str.strip()
+        df = df[(df["_name"] != "") & (df["_name"].str.lower() != "nan")].copy()
+        df["_qty"] = to_num(df["quantity"])
+        df["_sales"] = to_num(df["gross_amount"])
+        df["_is_package"] = df["_name"].apply(lambda x: canonical_package(x) is not None)
+        single = df[(df["_sales"] > 0) & (~df["_is_package"])][["_name", "_qty", "_sales"]]
+        if single.empty:
+            return pd.DataFrame(columns=["_name", "qty", "sales"])
+        out = single.groupby("_name", as_index=False).agg(qty=("_qty", "sum"), sales=("_sales", "sum"))
+        return out.sort_values(["qty", "sales"], ascending=[False, False])
+
     def load_product_period(start: pd.Timestamp, end: pd.Timestamp) -> tuple[pd.DataFrame, pd.DataFrame]:
         mt = period_rows(read_excel("美团商品数据.xlsx"), "日期", start, end)
         mt["_name"] = mt["商品名"].astype(str).str.strip()
@@ -1042,8 +1073,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
 
     mt, ele = load_product_period(START, END)
     prev_mt_src, prev_ele_src = load_product_period(PREV_START, PREV_END)
-    single_ag = single_aggregate(mt, ele)
-    prev_single_ag = single_aggregate(prev_mt_src, prev_ele_src)
+    single_ag = single_aggregate_from_ora_product()
 
     rows: list[dict[str, Any]] = []
     denom = total_store_days or PERIOD_DAYS
@@ -1068,14 +1098,11 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         pkg_rows.append({"name": name, "qty": vals["qty"], "usd": safe_div(vals["qty"], denom), "sales": vals["sales"]})
 
     prev_single_qty: dict[str, float] = {}
-    if not prev_single_ag.empty:
-        prev_single_qty = {str(r["_name"]): float(r["qty"]) for _, r in prev_single_ag.iterrows()}
-    else:
-        for row in range(2, 63):
-            name = prev_single.cell(row, 3).value
-            qty = prev_single.cell(row, 4).value
-            if name:
-                prev_single_qty[str(name)] = float(qty or 0)
+    for row in range(2, 63):
+        name = prev_single.cell(row, 3).value
+        qty = prev_single.cell(row, 4).value
+        if name:
+            prev_single_qty[str(name)] = float(qty or 0)
 
     prev_pkg_qty: dict[str, float] = {}
     prev_pkg_lookup = package_lookup(prev_mt_src, prev_ele_src)
@@ -1472,6 +1499,8 @@ def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg
     for col, value in {4: qty_sum, 5: safe_div(qty_sum, total_store_days or PERIOD_DAYS), 6: sales_sum, 7: prev_sum, 8: diff(qty_sum, prev_sum), 13: sum(prev_single_qty.values())}.items():
         write(ws.cell(total_row, col), value)
     set_num_formats(ws, 2, total_row, [4, 5, 6, 7, 8, 13], [])
+    ws.column_dimensions["L"].hidden = True
+    ws.column_dimensions["M"].hidden = True
 
     ws2 = wb["商品销售排行-套餐"]
     ws2["F1"] = "上周销量"
@@ -1517,6 +1546,9 @@ def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg
     for col, value in total_values.items():
         write(ws2.cell(total_row, col), value)
     set_num_formats(ws2, 2, total_row, [3, 4, 5, 6, 7, 13], [8, 9, 10])
+    ws2.column_dimensions["E"].width = max(float(ws2.column_dimensions["E"].width or 0), 12)
+    ws2.column_dimensions["L"].hidden = True
+    ws2.column_dimensions["M"].hidden = True
 
 
 def write_complaints(wb, prev_wb, counts, top_rows) -> None:
