@@ -1,5 +1,5 @@
 const REQUIRED_FILES = [
-  { key: "previous", title: "上一期报表", canonical: "上一期报表.xlsx", match: [/外送(?:周报|月报)|周报|月报/i, /上一期|上期/i] },
+  { key: "previous", title: "上一期报表", canonical: "上一期报表.xlsx", match: [/外送(?:周报|月报)|周报|月报/i] },
   { key: "template", title: "报表模板", canonical: "ora外送报表模板.xlsx", match: [/模板|模版/i, /外送(?:周报|月报)|周报|月报/i] },
   { key: "storeInfo", title: "ORA门店信息表", canonical: "ORA门店信息表.xlsx", match: [/门店信息/i] },
   { key: "mtStore", title: "美团门店数据", canonical: "美团门店数据.xlsx", match: [/美团门店数据/i] },
@@ -110,9 +110,10 @@ function classifyByName(file) {
   const scored = REQUIRED_FILES.map((item) => ({
     item,
     score: item.match.reduce((sum, pattern) => sum + (pattern.test(file.name) ? 1 : 0), 0),
+    maxScore: item.match.length,
   })).filter((item) => item.score > 0);
   scored.sort((a, b) => b.score - a.score);
-  return scored[0]?.item ? { item: scored[0].item, method: "文件名" } : null;
+  return scored[0]?.item ? { item: scored[0].item, method: "文件名", score: scored[0].score, maxScore: scored[0].maxScore } : null;
 }
 
 function normalizeHint(value) {
@@ -205,6 +206,9 @@ async function classifyByHeader(file) {
 
 async function classify(file) {
   const nameResult = classifyByName(file);
+  if (nameResult?.score >= nameResult?.maxScore) {
+    return nameResult;
+  }
   const headerResult = await classifyByHeader(file);
   const nameKey = nameResult?.item?.key;
   const headerKey = headerResult?.item?.key;
