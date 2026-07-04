@@ -60,6 +60,7 @@ GENERATE_LOCK = threading.Lock()
 JOB_LOCK = threading.Lock()
 JOB_ROOT = Path(tempfile.gettempdir()) / "ora-report-cloud-jobs"
 JOBS: dict[str, dict[str, Any]] = {}
+APP_VERSION = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("COMMIT_SHA") or "local"
 
 app = FastAPI(title="ORA 外送报表生成服务")
 app.mount("/assets", StaticFiles(directory=STATIC_ROOT), name="assets")
@@ -206,8 +207,8 @@ def index() -> FileResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | int]:
+    return {"status": "ok", "version": APP_VERSION[:12], "required_files": len(REQUIRED_FILES)}
 
 
 @app.post("/api/jobs")
