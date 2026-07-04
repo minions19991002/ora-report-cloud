@@ -991,6 +991,21 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         cat = prev_single.cell(row, 2).value
         if name and cat and not str(cat).startswith("="):
             category_map[str(name)] = str(cat)
+    single_excluded_products = {
+        norm_product(name)
+        for name in [
+            "配送服务费",
+            "常规浓缩/浓度（ORA）",
+            "加蜂蜜（ORA）",
+            "加全脂奶（ORA）",
+            "加手作祁红茉香茶蜜（ORA）",
+            "加燕麦奶（ORA）",
+            "抹茶加份（ORA）",
+            "浓缩加份（ORA）",
+            "浓缩减份（ORA）",
+            "咸芝士奶盖（ORA）",
+        ]
+    }
 
     def load_ora_product_table() -> pd.DataFrame:
         raw = read_excel("Ora外送商品数据.xlsx", sheet_name=0, header=None)
@@ -1016,8 +1031,10 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         df = df[(df["_name"] != "") & (df["_name"].str.lower() != "nan")].copy()
         df["_qty"] = to_num(df["quantity"])
         df["_sales"] = to_num(df["gross_amount"])
+        df = df[(df["_qty"] > 0) & (df["_sales"] > 0)].copy()
+        df = df[~df["_name"].apply(lambda x: norm_product(x) in single_excluded_products)].copy()
         df["_is_package"] = df["_name"].apply(lambda x: canonical_package(x) is not None)
-        single = df[(df["_sales"] > 0) & (~df["_is_package"])][["_name", "_qty", "_sales"]]
+        single = df[~df["_is_package"]][["_name", "_qty", "_sales"]]
         if single.empty:
             return pd.DataFrame(columns=["_name", "qty", "sales"])
         out = single.groupby("_name", as_index=False).agg(qty=("_qty", "sum"), sales=("_sales", "sum"))
