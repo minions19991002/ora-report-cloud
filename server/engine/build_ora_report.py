@@ -67,8 +67,26 @@ class Store:
     code: str
 
 
+_EXCEL_CACHE: dict[tuple[str, tuple[tuple[str, str], ...]], Any] = {}
+
+
+def _excel_cache_key(name: str, kwargs: dict[str, Any]) -> tuple[str, tuple[tuple[str, str], ...]]:
+    return name, tuple(sorted((key, repr(value)) for key, value in kwargs.items()))
+
+
+def _copy_excel_data(value: Any) -> Any:
+    if isinstance(value, pd.DataFrame):
+        return value.copy()
+    if isinstance(value, dict):
+        return {key: df.copy() if isinstance(df, pd.DataFrame) else df for key, df in value.items()}
+    return value
+
+
 def read_excel(name: str, **kwargs) -> pd.DataFrame:
-    return pd.read_excel(BASE / name, **kwargs)
+    key = _excel_cache_key(name, kwargs)
+    if key not in _EXCEL_CACHE:
+        _EXCEL_CACHE[key] = pd.read_excel(BASE / name, **kwargs)
+    return _copy_excel_data(_EXCEL_CACHE[key])
 
 
 def norm_id(value: Any) -> str:
