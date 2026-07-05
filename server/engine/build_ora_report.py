@@ -1061,6 +1061,10 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
             "加全脂奶（ORA）",
             "加手作祁红茉香茶蜜（ORA）",
             "加燕麦奶（ORA）",
+            "加长白山天然椴树蜜",
+            "加燕麦奶",
+            "加牛奶",
+            "加手作祁红茉香茶蜜",
             "抹茶加份（ORA）",
             "浓缩加份（ORA）",
             "浓缩减份（ORA）",
@@ -1137,11 +1141,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         ele["_qty"] = to_num(ele["销量"])
         ele["_sales"] = to_num(ele["销售额"])
         ele = ele[(ele["_qty"] > 0) & (ele["_sales"] > 0)].copy()
-        if "是否套餐" in ele.columns:
-            ele_is_package = ele["是否套餐"].astype(str).eq("是")
-        else:
-            ele_is_package = pd.Series(False, index=ele.index)
-        ele["_is_package"] = ele_is_package | ele["_name"].apply(lambda x: canonical_package(x) is not None)
+        ele["_is_package"] = ele["_name"].apply(lambda x: canonical_package(x) is not None)
         if "是否配料" in ele.columns:
             ele["_is_addon"] = ele["是否配料"].astype(str).eq("是")
         else:
@@ -1686,12 +1686,24 @@ def fmt_signed_int(value: float, unit: str = "") -> str:
     return f"0{unit}"
 
 
+def fmt_signed_int_with_hold(value: float, unit: str = "") -> str:
+    if int(round(value)) == 0:
+        return f"持平0{unit}"
+    return fmt_signed_int(value, unit)
+
+
 def fmt_signed_float(value: float, unit: str = "") -> str:
     if value > 1e-9:
         return f"+{value:.1f}{unit}"
     if value < -1e-9:
         return f"-{abs(value):.1f}{unit}"
     return f"0.0{unit}"
+
+
+def fmt_signed_float_with_hold(value: float, unit: str = "") -> str:
+    if abs(round(value, 1)) <= 0:
+        return f"持平0.0{unit}"
+    return fmt_signed_float(value, unit)
 
 
 def fmt_pct_abs(value: float | None) -> str:
@@ -1701,8 +1713,8 @@ def fmt_pct_abs(value: float | None) -> str:
 
 
 def fmt_signed_pct(value: float | None) -> str:
-    if value is None or abs(value) <= 1e-9:
-        return "0.0%"
+    if value is None or abs(round(value * 100, 1)) <= 0:
+        return "持平0.0%"
     sign = "+" if value > 0 else "-"
     return f"{sign}{abs(value) * 100:.1f}%"
 
@@ -1711,23 +1723,53 @@ def fmt_level_pct(value: float) -> str:
     return f"{value * 100:.1f}%"
 
 
-def fmt_sales_or_orders(label: str, cur: float, prev: float, unit: str) -> str:
+def fmt_sales_change(label: str, cur: float, prev: float) -> str:
     delta = cur - prev
     gr = growth(cur, prev)
+    if int(round(delta)) == 0 and (gr is None or abs(round(gr * 100, 1)) <= 0):
+        return f"{label}持平0.0%（0元）"
     word = trend_word(delta)
     if gr is None:
-        return f"{label}{word}{fmt_signed_int(delta, unit)}"
-    return f"{label}{word}{fmt_pct_abs(gr)}（{fmt_signed_int(delta, unit)}）"
+        return f"{label}{word}0.0%（{fmt_signed_int(delta, '元')}）"
+    return f"{label}{word}{fmt_pct_abs(gr)}（{fmt_signed_int(delta, '元')}）"
 
 
-def fmt_at_delta(cur: float, prev: float) -> str:
+def fmt_sales_or_orders(label: str, cur: float, prev: float, unit: str) -> str:
+    if unit == "元":
+        return fmt_sales_change(label, cur, prev)
     delta = cur - prev
-    return f"AT{trend_word(delta)}{fmt_signed_float(delta, '元')}"
+    if int(round(delta)) == 0:
+        return f"{label}持平0{unit}"
+    return f"{label}{fmt_signed_int(delta, unit)}"
 
 
-def fmt_rate_delta(label: str, cur: float, prev: float, point_word: str = "个百分点") -> str:
+def fmt_at_delta(cur: float, prev: float, label: str = "AT") -> str:
     delta = cur - prev
-    return f"{label}{trend_word(delta)}{abs(delta) * 100:.1f}{point_word}"
+    return f"{label}{fmt_signed_float_with_hold(delta, '元')}"
+
+
+def fmt_order_delta(cur: float, prev: float) -> str:
+    delta = cur - prev
+    if int(round(delta)) == 0:
+        return "订单持平0单"
+    return f"订单{fmt_signed_int(delta, '单')}"
+
+
+def fmt_platform_sales(label: str, cur: float, prev: float) -> str:
+    delta = cur - prev
+    gr = growth(cur, prev)
+    if int(round(delta)) == 0 and (gr is None or abs(round(gr * 100, 1)) <= 0):
+        return f"{label}sales持平0.0%"
+    if gr is None:
+        return f"{label}sales{trend_word(delta)}0.0%"
+    return f"{label}sales{trend_word(delta)}{fmt_pct_abs(gr)}"
+
+
+def fmt_rate_delta(label: str, cur: float, prev: float) -> str:
+    delta = cur - prev
+    if abs(round(delta * 100, 1)) <= 0:
+        return f"{label}持平"
+    return f"{label}{trend_word(delta)}{abs(delta) * 100:.1f}%"
 
 
 def same_direction(metric_delta: float, sales_delta: float) -> bool:
@@ -1738,12 +1780,33 @@ def same_direction(metric_delta: float, sales_delta: float) -> bool:
     return abs(metric_delta) <= 1e-9
 
 
+def include_platform_factor(metric_delta: float, sales_delta: float) -> bool:
+    if abs(sales_delta) <= 1e-9:
+        return abs(metric_delta) <= 1e-9
+    return same_direction(metric_delta, sales_delta) and abs(metric_delta) > 1e-9
+
+
+def trend_bucket(value: float, zero_threshold: float) -> int:
+    if value > zero_threshold:
+        return 1
+    if value < -zero_threshold:
+        return -1
+    return 0
+
+
+def include_platform_factor_display(metric_delta: float, sales_delta: float, zero_threshold: float) -> bool:
+    return trend_bucket(metric_delta, zero_threshold) == trend_bucket(sales_delta, 1e-9)
+
+
 def exposure_phrase(cur: dict[str, float], prev: dict[str, float]) -> str:
     exp_growth = record_growth(cur, prev, "exp_people")
     exp_delta = record_delta(cur, prev, "exp_people")
-    word = trend_word(exp_delta)
+    display_delta = exp_delta
+    if exp_growth is not None and abs(round(exp_growth * 100, 1)) <= 0:
+        display_delta = 0.0
+    word = trend_word(display_delta)
     phrase = f"曝光量{word}{fmt_pct_abs(exp_growth)}"
-    if exp_delta >= -1e-9:
+    if display_delta >= -1e-9:
         return phrase
 
     total_growth = record_growth(cur, prev, "exp_count")
@@ -1771,34 +1834,50 @@ def build_business_scope_sentence(label: str, cur: dict[str, float], prev: dict[
     if abs(cur.get("sales", 0.0)) <= 1e-9 and abs(prev.get("sales", 0.0)) <= 1e-9:
         return None
 
-    pieces = [fmt_sales_or_orders("总sales", cur.get("sales", 0.0), prev.get("sales", 0.0), "元")]
+    sales_label = f"{CURRENT_SHEET}总sales" if label == "整体" else "总sales"
+    pieces = [fmt_sales_or_orders(sales_label, cur.get("sales", 0.0), prev.get("sales", 0.0), "元")]
     if include_daily_sales:
         cur_daily = safe_div(cur.get("sales", 0.0), PERIOD_DAYS) or 0.0
         prev_days = int((PREV_END - PREV_START).days) + 1
         prev_daily = safe_div(prev.get("sales", 0.0), prev_days) or 0.0
         pieces.append(fmt_sales_or_orders("日均sales", cur_daily, prev_daily, "元"))
 
-    order_delta = record_delta(cur, prev, "orders")
-    if same_direction(order_delta, sales_delta):
-        pieces.append(fmt_sales_or_orders("订单", cur.get("orders", 0.0), prev.get("orders", 0.0), "单"))
+    pieces.append(fmt_order_delta(cur.get("orders", 0.0), prev.get("orders", 0.0)))
+    pieces.append(fmt_at_delta(cur.get("at", 0.0), prev.get("at", 0.0), "总AT" if label == "整体" else "AT"))
 
-    at_delta = record_delta(cur, prev, "at")
-    if same_direction(at_delta, sales_delta):
-        pieces.append(fmt_at_delta(cur.get("at", 0.0), prev.get("at", 0.0)))
+    return f"{label}： " + "，".join(pieces)
 
+
+def build_platform_scope_sentence(label: str, cur: dict[str, float], prev: dict[str, float]) -> str | None:
+    sales_delta = record_delta(cur, prev, "sales")
+    if abs(cur.get("sales", 0.0)) <= 1e-9 and abs(prev.get("sales", 0.0)) <= 1e-9:
+        return None
+
+    reasons: list[str] = []
     exp_delta = record_delta(cur, prev, "exp_people")
-    if same_direction(exp_delta, sales_delta):
-        pieces.append(exposure_phrase(cur, prev))
+    exp_growth = record_growth(cur, prev, "exp_people")
+    if (
+        (exp_growth is not None and include_platform_factor_display(exp_growth, sales_delta, 0.0005))
+        or (exp_growth is None and include_platform_factor(exp_delta, sales_delta))
+    ):
+        reasons.append(exposure_phrase(cur, prev))
 
     entry_delta = record_delta(cur, prev, "entry_rate")
-    if same_direction(entry_delta, sales_delta):
-        pieces.append(fmt_rate_delta("P1", cur.get("entry_rate", 0.0), prev.get("entry_rate", 0.0)))
+    if include_platform_factor_display(entry_delta, sales_delta, 0.0005):
+        reasons.append(fmt_rate_delta("P1", cur.get("entry_rate", 0.0), prev.get("entry_rate", 0.0)))
 
     order_rate_delta = record_delta(cur, prev, "order_rate")
-    if same_direction(order_rate_delta, sales_delta):
-        pieces.append(fmt_rate_delta("P2", cur.get("order_rate", 0.0), prev.get("order_rate", 0.0)))
+    if include_platform_factor_display(order_rate_delta, sales_delta, 0.0005):
+        reasons.append(fmt_rate_delta("P2", cur.get("order_rate", 0.0), prev.get("order_rate", 0.0)))
 
-    return f"{label}：" + "，".join(pieces)
+    at_delta = record_delta(cur, prev, "at")
+    if include_platform_factor_display(at_delta, sales_delta, 0.05):
+        reasons.append(fmt_at_delta(cur.get("at", 0.0), prev.get("at", 0.0)))
+
+    sentence = fmt_platform_sales(label, cur.get("sales", 0.0), prev.get("sales", 0.0))
+    if reasons:
+        sentence += "，主要是因为" + "，".join(reasons)
+    return sentence
 
 
 def business_entity_text(
@@ -1816,10 +1895,8 @@ def business_entity_text(
 
     platform_sentences: list[str] = []
     for scope, name in [("mt", "美团"), ("ele", "饿了么")]:
-        platform_delta = record_delta(cur_records[scope], prev_records[scope], "sales")
-        if not same_direction(platform_delta, total_sales_delta):
-            continue
-        sentence = build_business_scope_sentence(name, cur_records[scope], prev_records[scope], include_daily_sales)
+        platform_label = f"{name}整体" if label == "整体" else name
+        sentence = build_platform_scope_sentence(platform_label, cur_records[scope], prev_records[scope])
         if sentence:
             platform_sentences.append(sentence)
     if platform_sentences:
@@ -1882,8 +1959,6 @@ def build_business_analysis_text(wb) -> str:
             continue
         cur_records = read_records_for_rows(cur_ws, cur_schema, cur_rows)
         prev_records = read_records_for_rows(prev_ws, prev_schema, prev_rows)
-        if record_delta(cur_records["total"], prev_records["total"], "sales") >= -1e-9:
-            continue
         store_label = cell_text(name) or cell_text(code)
         text = business_entity_text(store_label, cur_records, prev_records, include_daily_sales)
         if text:
@@ -1934,9 +2009,19 @@ def email_change_word(value: float) -> str:
 
 
 def email_pct_phrase(value: float | None) -> str:
-    if value is None:
+    if value is None or abs(round(value * 100, 1)) <= 0:
         return "持平0.0%"
     return f"{email_change_word(value)}{fmt_pct_abs(value)}"
+
+
+def current_score_bad_total(sheet) -> float:
+    score_header = section_header(sheet, "门店评分")
+    bad_col = scoped_header_col(sheet, score_header, {"total": (1, sheet.max_column or 1)}, "total", ["中差评"], exact=True)
+    if not bad_col:
+        return 0.0
+    by_code, by_name = section_rows_for_analysis(sheet, "门店评分")
+    rows = sorted(set(by_code.values()) | set(by_name.values()))
+    return sum(analysis_cell_num(sheet, row, bad_col) for row in rows)
 
 
 def build_performance_email_text(wb) -> str:
@@ -1965,16 +2050,17 @@ def build_performance_email_text(wb) -> str:
     exp_daily_growth = record_growth(cur_total, prev_total, "exp_people_daily")
     entry_delta = record_delta(cur_total, prev_total, "entry_rate")
     order_rate_delta = record_delta(cur_total, prev_total, "order_rate")
+    bad_total = current_score_bad_total(cur_ws)
 
     return "\n".join(
         [
-            f"1、上周业绩：sales达成{fmt_int_abs(cur_total.get('sales', 0.0))}元，环比上周{email_pct_phrase(sales_growth)}；有效单{fmt_signed_int(orders_delta, '单')}，AT{fmt_signed_float(at_delta, '元')}",
-            f"渠道表现：美团sales环比{email_pct_phrase(mt_sales_growth)}（{fmt_signed_int(mt_sales_delta, '元')}），饿了么sales环比{email_pct_phrase(ele_sales_growth)}（{fmt_signed_int(ele_sales_delta, '元')}）",
+            f"1、上周业绩：sales达成{fmt_int_abs(cur_total.get('sales', 0.0))}元，环比上周{email_pct_phrase(sales_growth)}；有效单{fmt_signed_int_with_hold(orders_delta, '单')}，AT{fmt_signed_float_with_hold(at_delta, '元')}",
+            f"渠道表现：美团sales环比{email_pct_phrase(mt_sales_growth)}（{fmt_signed_int_with_hold(mt_sales_delta, '元')}），饿了么sales环比{email_pct_phrase(ele_sales_growth)}（{fmt_signed_int_with_hold(ele_sales_delta, '元')}）",
             f"2、折扣情况：整体折扣率为{fmt_level_pct(cur_total.get('discount_rate', 0.0))}（环比{fmt_signed_pct(discount_delta)}）",
             f"3、流量表现：店均日曝光人数{fmt_int_abs(cur_total.get('exp_people_daily', 0.0))}（环比{fmt_signed_pct(exp_daily_growth)}），进店转化率{fmt_level_pct(cur_total.get('entry_rate', 0.0))}（环比{fmt_signed_pct(entry_delta)}），下单转化率{fmt_level_pct(cur_total.get('order_rate', 0.0))}（环比{fmt_signed_pct(order_rate_delta)}）",
             f"4、推广表现：消耗金额{fmt_int_abs(cur_total.get('ad_spend', 0.0))}元，进店数{fmt_int_abs(cur_total.get('ad_visits', 0.0))}人次，预估带来sales {fmt_int_abs(cur_total.get('ad_orig', 0.0))}元，平均ROI为{cur_total.get('ad_roi', 0.0):.1f}",
             "5、服务指标",
-            f"中差评：{fmt_int_abs(cur_total.get('bad', 0.0))}条",
+            f"中差评：{fmt_int_abs(bad_total)}条",
         ]
     )
 
@@ -2095,11 +2181,11 @@ def write_distance_and_paid(wb, prev_wb, distance, paid, stores: list[Store]) ->
     prev_paid_maps = sheet_store_row_maps(prev, 24, 39, 2, 1)
     for r in range(5, 21):
         code = store_code_by_sheet_row(ws, r, stores, 2, 1)
-        prev_r = matched_row_by_code_name(code, ws.cell(r, 1).value, *prev_distance_maps) or r
+        prev_r = matched_row_by_code_name(code, ws.cell(r, 1).value, *prev_distance_maps)
         p = distance.get(code, {"total": {}, "mt": {}, "ele": {}})
         # Previous current values into prior columns.
         for cur_col, prev_col in [(3, 4), (6, 7), (9, 10), (14, 15), (17, 18), (20, 21), (25, 26), (28, 29), (31, 32)]:
-            write(ws.cell(r, prev_col), prev.cell(prev_r, cur_col).value)
+            write(ws.cell(r, prev_col), prev.cell(prev_r, cur_col).value if prev_r else 0)
         vals = [
             (3, p["total"].get("0_1", 0.0)),
             (6, p["total"].get("1_3", 0.0)),
@@ -2118,10 +2204,10 @@ def write_distance_and_paid(wb, prev_wb, distance, paid, stores: list[Store]) ->
 
         r2 = r + 19
         paid_code = store_code_by_sheet_row(ws, r2, stores, 2, 1) or code
-        prev_r2 = matched_row_by_code_name(paid_code, ws.cell(r2, 1).value, *prev_paid_maps) or r2
+        prev_r2 = matched_row_by_code_name(paid_code, ws.cell(r2, 1).value, *prev_paid_maps)
         q = paid.get(paid_code, {"total": {}, "mt": {}, "ele": {}})
         for cur_col, prev_col in [(3, 4), (6, 7), (9, 10), (14, 15), (17, 18), (20, 21), (25, 26), (28, 29), (31, 32)]:
-            write(ws.cell(r2, prev_col), prev.cell(prev_r2, cur_col).value)
+            write(ws.cell(r2, prev_col), prev.cell(prev_r2, cur_col).value if prev_r2 else 0)
         vals2 = [
             (3, q["total"].get("0_20", 0.0)),
             (6, q["total"].get("20_30", 0.0)),

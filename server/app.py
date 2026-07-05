@@ -60,6 +60,9 @@ GENERATE_LOCK = threading.Lock()
 JOB_LOCK = threading.Lock()
 JOB_ROOT = Path(tempfile.gettempdir()) / "ora-report-cloud-jobs"
 JOBS: dict[str, dict[str, Any]] = {}
+UPLOAD_SESSION_ROOT = Path(tempfile.gettempdir()) / "ora-report-cloud-upload-sessions"
+UPLOAD_SESSION_LOCK = threading.Lock()
+UPLOAD_SESSIONS: dict[str, dict[str, Any]] = {}
 APP_VERSION = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("COMMIT_SHA") or "local"
 
 app = FastAPI(title="ORA 外送报表生成服务")
@@ -143,6 +146,20 @@ def get_job(job_id: str) -> dict[str, Any]:
         return dict(job)
 
 
+def get_upload_session(upload_id: str) -> dict[str, Any]:
+    with UPLOAD_SESSION_LOCK:
+        session = UPLOAD_SESSIONS.get(upload_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="upload session not found")
+        return dict(session)
+
+
+def set_upload_session(upload_id: str, **updates: Any) -> None:
+    with UPLOAD_SESSION_LOCK:
+        current = UPLOAD_SESSIONS.setdefault(upload_id, {})
+        current.update(updates)
+
+
 def build_env(input_dir: Path, work_dir: Path, current_start: str, current_end: str, previous_start: str, previous_end: str) -> tuple[dict[str, str], str]:
     current_sheet = period_label(current_start, current_end)
     previous_sheet = period_label(previous_start, previous_end)
@@ -209,6 +226,76 @@ def index() -> FileResponse:
 @app.get("/health")
 def health() -> dict[str, str | int]:
     return {"status": "ok", "version": APP_VERSION[:12], "required_files": len(REQUIRED_FILES)}
+
+
+@app.post("/api/upload-sessions")
+def create_upload_session() -> dict[str, Any]:
+    UPLOAD_SESSION_ROOT.mkdir(parents=True, exist_ok=True)
+    upload_id = uuid4().hex
+    session_dir = Path(tempfile.mkdtemp(prefix=upload_id + "-", dir=UPLOAD_SESSION_ROOT))
+    input_dir = session_dir / "input"
+    work_dir = session_dir / "work"
+    (work_dir / "outputs").mkdir(parents=True, exist_ok=True)
+    set_upload_session(
+        upload_id,
+        root_dir=str(session_dir),
+        input_dir=str(input_dir),
+        work_dir=str(work_dir),
+        uploaded=set(),
+    )
+    return {"upload_id": upload_id, "required_files": len(REQUIRED_FILES)}
+
+
+@app.post("/api/upload-sessions/{upload_id}/files/{key}")
+async def upload_session_file(upload_id: str, key: str, request: Request) -> dict[str, Any]:
+    if key not in REQUIRED_FILES:
+        raise HTTPException(status_code=404, detail="unknown file key")
+    session = get_upload_session(upload_id)
+    form = await request.form()
+    upload = form.get("file")
+    if not isinstance(upload, UploadFile):
+        raise HTTPException(status_code=400, detail="missing file")
+    await save_upload(upload, Path(str(session["input_dir"])) / REQUIRED_FILES[key])
+    with UPLOAD_SESSION_LOCK:
+        current = UPLOAD_SESSIONS.get(upload_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="upload session not found")
+        uploaded = set(current.get("uploaded", set()))
+        uploaded.add(key)
+        current["uploaded"] = uploaded
+    return {"upload_id": upload_id, "key": key, "uploaded": len(uploaded), "required_files": len(REQUIRED_FILES)}
+
+
+def run_uploaded_session_job(upload_id: str, job_id: str, job_dir: Path, env: dict[str, str], output_name: str) -> None:
+    try:
+        run_job(job_id, job_dir, env, output_name)
+    finally:
+        with UPLOAD_SESSION_LOCK:
+            UPLOAD_SESSIONS.pop(upload_id, None)
+
+
+@app.post("/api/upload-sessions/{upload_id}/start")
+async def start_upload_session_job(upload_id: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+    session = get_upload_session(upload_id)
+    payload = await request.json()
+    current_start = require_date(payload.get("current_start"), "current_start")
+    current_end = require_date(payload.get("current_end"), "current_end")
+    previous_start = require_date(payload.get("previous_start"), "previous_start")
+    previous_end = require_date(payload.get("previous_end"), "previous_end")
+
+    input_dir = Path(str(session["input_dir"]))
+    uploaded = set(session.get("uploaded", set()))
+    missing = [key for key, name in REQUIRED_FILES.items() if key not in uploaded or not (input_dir / name).exists()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"缺少上传文件：{', '.join(missing)}")
+
+    job_id = uuid4().hex
+    job_dir = Path(str(session["root_dir"]))
+    work_dir = Path(str(session["work_dir"]))
+    env, output_name = build_env(input_dir, work_dir, current_start, current_end, previous_start, previous_end)
+    set_job(job_id, status="queued", message="已上传，等待生成", filename=output_name)
+    background_tasks.add_task(run_uploaded_session_job, upload_id, job_id, job_dir, env, output_name)
+    return {"job_id": job_id, "status": "queued"}
 
 
 @app.post("/api/jobs")

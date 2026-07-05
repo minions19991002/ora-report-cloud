@@ -417,6 +417,44 @@ async function pollJob(jobId) {
   }
 }
 
+async function uploadFileToSession(uploadId, item, completed, total) {
+  const file = filesByKey.get(item.key);
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const response = await fetch(`/api/upload-sessions/${uploadId}/files/${item.key}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) throw new Error(await response.text());
+  const uploaded = completed();
+  progress.value = Math.max(progress.value, 12 + Math.floor((uploaded / total) * 43));
+  statusText.textContent = `上传中 ${uploaded}/${total}`;
+  log(`已上传 ${uploaded}/${total}：${item.title}`);
+}
+
+async function uploadFilesToSession() {
+  const sessionResponse = await fetch("/api/upload-sessions", { method: "POST" });
+  if (!sessionResponse.ok) throw new Error(await sessionResponse.text());
+  const session = await sessionResponse.json();
+  const uploadId = session.upload_id;
+  let uploaded = 0;
+  const nextCompleted = () => {
+    uploaded += 1;
+    return uploaded;
+  };
+  const queue = [...REQUIRED_FILES];
+  const workerCount = Math.min(3, queue.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (queue.length) {
+        const item = queue.shift();
+        await uploadFileToSession(uploadId, item, nextCompleted, REQUIRED_FILES.length);
+      }
+    }),
+  );
+  return uploadId;
+}
+
 async function generateReport() {
   if (!currentStartDate.value || !currentEndDate.value || !previousStartDate.value || !previousEndDate.value) {
     statusText.textContent = "周期缺失";
@@ -431,25 +469,24 @@ async function generateReport() {
   clearBtn.disabled = true;
   progress.value = 12;
   statusText.textContent = "上传生成中";
-  log("开始上传到服务器生成报表...");
+  log("开始分文件上传到服务器...");
 
   try {
-    const form = new FormData();
-    form.append("current_start", currentStartDate.value);
-    form.append("current_end", currentEndDate.value);
-    form.append("previous_start", previousStartDate.value);
-    form.append("previous_end", previousEndDate.value);
-    for (const item of REQUIRED_FILES) {
-      form.append(item.key, filesByKey.get(item.key), filesByKey.get(item.key).name);
-    }
-
-    progress.value = 30;
-    const response = await fetch("/api/jobs", { method: "POST", body: form });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(text);
-    }
-
+    const uploadId = await uploadFilesToSession();
+    progress.value = 56;
+    statusText.textContent = "创建生成任务";
+    log("文件上传完成，开始创建服务器生成任务...");
+    const response = await fetch(`/api/upload-sessions/${uploadId}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        current_start: currentStartDate.value,
+        current_end: currentEndDate.value,
+        previous_start: previousStartDate.value,
+        previous_end: previousEndDate.value,
+      }),
+    });
+    if (!response.ok) throw new Error(await response.text());
     const created = await response.json();
     log(`服务器任务已创建：${created.job_id}`);
     const job = await pollJob(created.job_id);
