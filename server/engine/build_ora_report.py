@@ -1248,6 +1248,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
     for name in PACKAGE_CANONICAL + new_packages:
         vals = pkg_lookup.get(name, {"qty": 0.0, "sales": 0.0})
         pkg_rows.append({"name": name, "qty": vals["qty"], "usd": safe_div(vals["qty"], denom), "sales": vals["sales"]})
+    pkg_rows.sort(key=lambda item: (-float(item.get("qty") or 0), -float(item.get("sales") or 0), str(item.get("name") or "")))
 
     prev_single_qty: dict[str, float] = {}
     for row in range(2, prev_single_total_row):
