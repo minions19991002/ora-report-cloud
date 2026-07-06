@@ -16,8 +16,9 @@ from typing import Any
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.formatting.rule import CellIsRule
 from openpyxl.formula.translate import Translator
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 
@@ -762,6 +763,19 @@ def ora_daily_scope(value: Any) -> str | None:
     return None
 
 
+def ora_store_lookup_maps(
+    stores: list[Store],
+    mt_to_code: dict[str, str],
+    ele_to_code: dict[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    code_map = {store.code: store.code for store in stores}
+    name_map = {norm_store_name(store.name): store.code for store in stores}
+    name_map.update({norm_store_name(store.name_full): store.code for store in stores})
+    code_map.update({key: value for key, value in mt_to_code.items() if key})
+    code_map.update({key: value for key, value in ele_to_code.items() if key})
+    return code_map, name_map
+
+
 def compute_ora_daily_operating(
     stores: list[Store],
     mt_to_code: dict[str, str],
@@ -779,11 +793,7 @@ def compute_ora_daily_operating(
         df = period_rows(df, "date_id", START, END)
     except KeyError:
         df = read_excel_columns("Ora外送日报.xlsx", columns)
-    code_map = {store.code: store.code for store in stores}
-    name_map = {norm_store_name(store.name): store.code for store in stores}
-    name_map.update({norm_store_name(store.name_full): store.code for store in stores})
-    code_map.update({key: value for key, value in mt_to_code.items() if key})
-    code_map.update({key: value for key, value in ele_to_code.items() if key})
+    code_map, name_map = ora_store_lookup_maps(stores, mt_to_code, ele_to_code)
 
     result: dict[str, dict[str, dict[str, float]]] = defaultdict(
         lambda: defaultdict(lambda: {"sales": 0.0, "orders": 0.0, "discount": 0.0})
@@ -804,6 +814,44 @@ def compute_ora_daily_operating(
             result[code][target]["orders"] += orders
             result[code][target]["discount"] += discount
     return {code: dict(scopes) for code, scopes in result.items()}
+
+
+def compute_ora_first_order_dates(
+    stores: list[Store],
+    mt_to_code: dict[str, str],
+    ele_to_code: dict[str, str],
+) -> dict[str, date]:
+    columns = {
+        "date_id": ["date_id", "日期"],
+        "store_id": ["store_id", "店号", "门店ID", "门店编号"],
+        "sales_channel": ["sales_channel", "销售渠道", "渠道", "平台"],
+        "order_count": ["order_count", "订单数", "有效订单", "ADT"],
+    }
+    try:
+        df = read_excel_columns("Ora外送日报.xlsx", columns)
+    except KeyError:
+        return {}
+    df = period_rows(df, "date_id", START, END)
+    if df.empty:
+        return {}
+    code_map, name_map = ora_store_lookup_maps(stores, mt_to_code, ele_to_code)
+    daily_orders: dict[tuple[str, date], float] = defaultdict(float)
+    for _, row in df.iterrows():
+        scope = ora_daily_scope(row.get("sales_channel"))
+        if scope not in {"mt", "ele"}:
+            continue
+        raw_id = cell_text(row.get("store_id"))
+        code = code_map.get(raw_id) or code_map.get(norm_id(raw_id)) or name_map.get(norm_store_name(raw_id))
+        row_date = row.get("_date")
+        if not code or pd.isna(row_date):
+            continue
+        daily_orders[(code, pd.Timestamp(row_date).date())] += scalar_num(row.get("order_count"))
+
+    first_dates: dict[str, date] = {}
+    for (code, row_date), orders in sorted(daily_orders.items(), key=lambda item: item[0][1]):
+        if orders > 0 and code not in first_dates:
+            first_dates[code] = row_date
+    return first_dates
 
 
 def ensure_current_sheet(wb) -> None:
@@ -948,6 +996,43 @@ def apply_total_row_bold(wb) -> None:
                 bold_row(ws, row)
 
 
+def apply_negative_growth_red(wb) -> None:
+    """Show negative growth/comparison percentages in red without touching layout."""
+    red_font = Font(color="FF0000")
+    keywords = ("增长", "同比", "环比")
+
+    for ws in wb.worksheets:
+        if getattr(ws, "sheet_state", "visible") != "visible" or ws.max_row < 2:
+            continue
+        formatted_ranges: set[str] = set()
+        max_col = ws.max_column or 1
+        max_row = ws.max_row or 1
+        for row in range(1, max_row + 1):
+            for col in range(1, max_col + 1):
+                header = cell_text(ws.cell(row, col).value)
+                if not header or not any(keyword in header for keyword in keywords):
+                    continue
+                sample_rows = range(row + 1, min(max_row, row + 40) + 1)
+                percent_like = "%" in header or any("%" in str(ws.cell(sample_row, col).number_format or "") for sample_row in sample_rows)
+                if not percent_like:
+                    continue
+                col_letter = get_column_letter(col)
+                cell_range = f"{col_letter}{row + 1}:{col_letter}{max_row}"
+                if cell_range in formatted_ranges:
+                    continue
+                ws.conditional_formatting.add(
+                    cell_range,
+                    CellIsRule(operator="lessThan", formula=["0"], font=red_font),
+                )
+                formatted_ranges.add(cell_range)
+                for data_row in range(row + 1, max_row + 1):
+                    data_cell = ws.cell(data_row, col)
+                    if isinstance(data_cell.value, (int, float)) and data_cell.value < 0:
+                        font = copy(data_cell.font)
+                        font.color = "FF0000"
+                        data_cell.font = font
+
+
 def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     mt_store = current_rows(read_excel("美团门店数据.xlsx"), "日期")
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
@@ -1027,6 +1112,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     )
 
     ora_operating = compute_ora_daily_operating(stores, mt_to_code, ele_to_code)
+    ora_open_dates = compute_ora_first_order_dates(stores, mt_to_code, ele_to_code)
 
     praise = read_excel("好评数中差评数据.xlsx")
     praise["_id"] = praise["平台门店ID"].map(norm_id)
@@ -1117,6 +1203,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         metrics[code] = {
             "store": store,
             "biz_days": bd,
+            "open_date": ora_open_dates.get(code),
             "total": {
                 "sales": total_sales,
                 "sales_daily": safe_div(total_sales, den),
@@ -1753,6 +1840,9 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
     for store in stores:
         row = matched_row_by_store(store, operating_row_by_code, operating_row_by_name)
         if row:
+            if not ws.cell(row, 1).value and metrics[store.code].get("open_date"):
+                write(ws.cell(row, 1), metrics[store.code]["open_date"])
+                ws.cell(row, 1).number_format = "yyyy/m/d"
             prev_row = matched_row_by_store(store, prev_operating_by_code, prev_operating_by_name)
             write_operating(row, metrics[store.code], prev_row)
 
@@ -1946,6 +2036,12 @@ def section_total(sheet, title: str) -> int:
 def section_rows_for_analysis(sheet, title: str) -> tuple[dict[str, int], dict[str, int]]:
     start, end, _total = ANALYSIS_SECTION_FALLBACKS[title]
     return section_store_row_maps(sheet, title, start, end)
+
+
+def section_last_store_row(sheet, title: str) -> int:
+    by_code, by_name = section_rows_for_analysis(sheet, title)
+    rows = set(by_code.values()) | set(by_name.values())
+    return max(rows) if rows else section_total(sheet, title)
 
 
 def analysis_row_maps(sheet) -> dict[str, tuple[dict[str, int], dict[str, int]]]:
@@ -2441,8 +2537,8 @@ def write_business_analysis(wb) -> None:
     text = build_business_analysis_text(wb)
     if not text:
         text = "整体：本期与上期核心经营数据暂无可比变化。"
-    score_total = section_total(ws, "门店评分")
-    start_row = max(score_total + 2, 81)
+    score_end = section_last_store_row(ws, "门店评分")
+    start_row = max(score_end + 2, 81)
     write_merged_text_area(ws, text, start_row, 4, 12, min_rows=20)
 
 
@@ -3019,6 +3115,7 @@ def main() -> None:
     write_email_content_sheet(wb)
     refresh_period_labels(wb)
     apply_total_row_bold(wb)
+    apply_negative_growth_red(wb)
 
     if hasattr(wb, "calculation"):
         wb.calculation.fullCalcOnLoad = True
