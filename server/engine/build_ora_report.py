@@ -489,6 +489,63 @@ def sum_by_store(df: pd.DataFrame, store_col: str, cols: list[str]) -> dict[str,
     return result
 
 
+def ora_daily_scope(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if "美团" in text:
+        return "mt"
+    if "饿了么" in text or "淘宝" in text or "蜂鸟" in text:
+        return "ele"
+    if "京东" in text:
+        return "jd"
+    if "小程序" in text or "自营" in text:
+        return "mini"
+    return None
+
+
+def compute_ora_daily_operating(
+    stores: list[Store],
+    mt_to_code: dict[str, str],
+    ele_to_code: dict[str, str],
+) -> dict[str, dict[str, dict[str, float]]]:
+    columns = {
+        "store_id": ["store_id", "店号", "门店ID", "门店编号"],
+        "sales_channel": ["sales_channel", "销售渠道", "渠道", "平台"],
+        "gross_amount": ["gross_amount", "销售额", "总sales", "营业额"],
+        "order_count": ["order_count", "订单数", "有效订单", "ADT"],
+        "discount_amount": ["discount_amount", "优惠金额", "商户折扣金额", "折扣金额"],
+    }
+    try:
+        df = read_excel_columns("Ora外送日报.xlsx", {"date_id": ["date_id", "日期"], **columns})
+        df = period_rows(df, "date_id", START, END)
+    except KeyError:
+        df = read_excel_columns("Ora外送日报.xlsx", columns)
+    code_map = {store.code: store.code for store in stores}
+    name_map = {norm_store_name(store.name): store.code for store in stores}
+    name_map.update({norm_store_name(store.name_full): store.code for store in stores})
+    code_map.update({key: value for key, value in mt_to_code.items() if key})
+    code_map.update({key: value for key, value in ele_to_code.items() if key})
+
+    result: dict[str, dict[str, dict[str, float]]] = defaultdict(
+        lambda: defaultdict(lambda: {"sales": 0.0, "orders": 0.0, "discount": 0.0})
+    )
+    for _, row in df.iterrows():
+        raw_id = cell_text(row.get("store_id"))
+        code = code_map.get(raw_id) or code_map.get(norm_id(raw_id)) or name_map.get(norm_store_name(raw_id))
+        if not code:
+            continue
+        sales = scalar_num(row.get("gross_amount"))
+        orders = scalar_num(row.get("order_count"))
+        discount = scalar_num(row.get("discount_amount"))
+        scope = ora_daily_scope(row.get("sales_channel"))
+        for target in ["total", scope]:
+            if not target:
+                continue
+            result[code][target]["sales"] += sales
+            result[code][target]["orders"] += orders
+            result[code][target]["discount"] += discount
+    return {code: dict(scopes) for code, scopes in result.items()}
+
+
 def ensure_current_sheet(wb) -> None:
     if CURRENT_SHEET in wb.sheetnames:
         return
@@ -709,6 +766,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ["推广现金消费(元)", "曝光提升数", "进店提升数", "订单原价交易额(元)"],
     )
 
+    ora_operating = compute_ora_daily_operating(stores, mt_to_code, ele_to_code)
+
     praise = read_excel("好评数中差评数据.xlsx")
     praise["_id"] = praise["平台门店ID"].map(norm_id)
     praise["code_mt"] = praise["_id"].map(mt_to_code)
@@ -733,13 +792,34 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         epr = ele_pr.get(code, {})
         bd = biz_days.get(code, 0)
         den = bd or None
+        ora = ora_operating.get(code, {})
 
-        mt_sales = mt.get("_sales", 0.0)
-        ele_sales = el.get("_sales", 0.0)
-        mt_discount = mt.get("商家活动支出", 0.0)
-        ele_discount = el.get("商家活动成本（含满减活动）", 0.0)
-        mt_orders = mt.get("有效订单", 0.0)
-        ele_orders = el.get("有效订单", 0.0)
+        def ora_scope(scope: str) -> dict[str, float]:
+            values = ora.get(scope, {})
+            return {
+                "sales": float(values.get("sales", 0.0)),
+                "orders": float(values.get("orders", 0.0)),
+                "discount": float(values.get("discount", 0.0)),
+            }
+
+        total_op = ora_scope("total")
+        mt_op = ora_scope("mt")
+        ele_op = ora_scope("ele")
+        jd_op = ora_scope("jd")
+        mini_op = ora_scope("mini")
+
+        mt_sales = mt_op["sales"]
+        ele_sales = ele_op["sales"]
+        jd_sales = jd_op["sales"]
+        mini_sales = mini_op["sales"]
+        mt_discount = mt_op["discount"]
+        ele_discount = ele_op["discount"]
+        jd_discount = jd_op["discount"]
+        mini_discount = mini_op["discount"]
+        mt_orders = mt_op["orders"]
+        ele_orders = ele_op["orders"]
+        jd_orders = jd_op["orders"]
+        mini_orders = mini_op["orders"]
         mt_exp = mt.get("曝光人数", 0.0)
         ele_exp = el.get("曝光人数", 0.0)
         mt_entry = mt.get("入店人数", 0.0)
@@ -750,7 +830,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_exp_count = el.get("曝光次数", 0.0)
         mt_base_gmv = mt.get("优惠前总额", 0.0)
         ele_base_gmv = el.get("营业额", 0.0)
-        total_discount_base = mt_base_gmv + ele_base_gmv
+        total_discount_base = total_op["sales"]
 
         mt_paid_exp = mt.get("曝光提升数(次)", 0.0) if mt_paid_exp_from_store else mpr.get("曝光提升数(次)", 0.0)
         ele_paid_exp = el.get("曝光提升数", 0.0) if ele_paid_exp_from_store else epr.get("曝光提升数", 0.0)
@@ -761,9 +841,9 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         mt_orig = mpr.get("订单原价交易额(元)", 0.0)
         ele_orig = epr.get("订单原价交易额(元)", 0.0)
 
-        total_sales = mt_sales + ele_sales
-        total_discount = mt_discount + ele_discount
-        total_orders = mt_orders + ele_orders
+        total_sales = total_op["sales"]
+        total_discount = total_op["discount"]
+        total_orders = total_op["orders"]
         total_exp = mt_exp + ele_exp
         total_entry = mt_entry + ele_entry
         total_buyers = mt_buyers + ele_buyers
@@ -806,8 +886,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "sales": mt_sales,
                 "sales_daily": safe_div(mt_sales, den),
                 "discount": mt_discount,
-                "discount_base": mt_base_gmv,
-                "discount_rate": safe_div(mt_discount, mt_base_gmv),
+                "discount_base": mt_sales,
+                "discount_rate": safe_div(mt_discount, mt_sales),
                 "orders": mt_orders,
                 "orders_daily": safe_div(mt_orders, den),
                 "at": safe_div(mt_sales, mt_orders),
@@ -831,8 +911,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "sales": ele_sales,
                 "sales_daily": safe_div(ele_sales, den),
                 "discount": ele_discount,
-                "discount_base": ele_base_gmv,
-                "discount_rate": safe_div(ele_discount, ele_base_gmv),
+                "discount_base": ele_sales,
+                "discount_rate": safe_div(ele_discount, ele_sales),
                 "orders": ele_orders,
                 "orders_daily": safe_div(ele_orders, den),
                 "at": safe_div(ele_sales, ele_orders),
@@ -852,6 +932,26 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "good": ele_r.get(code, {}).get("good", 0.0),
                 "bad": ele_r.get(code, {}).get("bad", 0.0),
             },
+            "jd": {
+                "sales": jd_sales,
+                "sales_daily": safe_div(jd_sales, den),
+                "discount": jd_discount,
+                "discount_base": jd_sales,
+                "discount_rate": safe_div(jd_discount, jd_sales),
+                "orders": jd_orders,
+                "orders_daily": safe_div(jd_orders, den),
+                "at": safe_div(jd_sales, jd_orders),
+            },
+            "mini": {
+                "sales": mini_sales,
+                "sales_daily": safe_div(mini_sales, den),
+                "discount": mini_discount,
+                "discount_base": mini_sales,
+                "discount_rate": safe_div(mini_discount, mini_sales),
+                "orders": mini_orders,
+                "orders_daily": safe_div(mini_orders, den),
+                "at": safe_div(mini_sales, mini_orders),
+            },
         }
 
     totals = {
@@ -865,7 +965,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
             "饿了么": "饿了么门店数据.曝光提升数" if ele_paid_exp_from_store else "饿了么推广.曝光提升数（饿了么门店数据缺少该列）",
         },
     }
-    for scope in ["total", "mt", "ele"]:
+    for scope in ["total", "mt", "ele", "jd", "mini"]:
         subtotal: dict[str, float] = defaultdict(float)
         for code in [s.code for s in stores]:
             for key, value in metrics[code][scope].items():
@@ -890,6 +990,9 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         elif scope == "ele":
             entry_sum = sum(ele_ag.get(s.code, {}).get("进店人数", 0.0) for s in stores)
             buyer_sum = sum(ele_ag.get(s.code, {}).get("下单人数", 0.0) for s in stores)
+        elif scope in {"jd", "mini"}:
+            entry_sum = 0.0
+            buyer_sum = 0.0
         else:
             entry_sum = sum(mt_ag.get(s.code, {}).get("入店人数", 0.0) + ele_ag.get(s.code, {}).get("进店人数", 0.0) for s in stores)
             buyer_sum = sum(mt_ag.get(s.code, {}).get("下单人数", 0.0) + ele_ag.get(s.code, {}).get("下单人数", 0.0) for s in stores)
@@ -901,6 +1004,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
             base_gmv = sum(mt_ag.get(s.code, {}).get("优惠前总额", 0.0) for s in stores)
         elif scope == "ele":
             base_gmv = sum(ele_ag.get(s.code, {}).get("营业额", 0.0) for s in stores)
+        elif scope in {"jd", "mini"}:
+            base_gmv = 0.0
         else:
             base_gmv = sum(mt_ag.get(s.code, {}).get("优惠前总额", 0.0) + ele_ag.get(s.code, {}).get("营业额", 0.0) for s in stores)
         subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], base_gmv)
@@ -1334,6 +1439,8 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
         total = data["total"]
         mt = data["mt"]
         ele = data["ele"]
+        jd = data.get("jd", {})
+        mini = data.get("mini", {})
         values = {
             4: total["sales_daily"],
             5: total["sales"],
@@ -1362,11 +1469,25 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
             30: ele["orders"],
             31: ele["at"],
             32: diff(ele["at"], prev_value(prev_row, 31)),
+            34: jd.get("sales_daily"),
+            35: jd.get("sales"),
+            36: growth(jd.get("sales"), prev_value(prev_row, 35)),
+            37: jd.get("discount"),
+            38: jd.get("discount_rate"),
+            39: jd.get("orders_daily"),
+            40: jd.get("orders"),
+            41: jd.get("at"),
+            43: mini.get("sales_daily"),
+            44: mini.get("sales"),
+            45: growth(mini.get("sales"), prev_value(prev_row, 44)),
+            46: mini.get("discount"),
+            47: mini.get("discount_rate"),
+            48: mini.get("orders_daily"),
+            49: mini.get("orders"),
+            50: mini.get("at"),
         }
         for col, value in values.items():
             write(ws.cell(row, col), value)
-        for col in [34, 35, 37, 39, 40, 42, 43, 45, 47, 48]:
-            write(ws.cell(row, col), 0)
 
     for store in stores:
         row = matched_row_by_store(store, operating_row_by_code, operating_row_by_name)
@@ -1374,7 +1495,7 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
             prev_row = matched_row_by_store(store, prev_operating_by_code, prev_operating_by_name)
             write_operating(row, metrics[store.code], prev_row)
 
-    total_data = {"total": totals["total"], "mt": totals["mt"], "ele": totals["ele"]}
+    total_data = {"total": totals["total"], "mt": totals["mt"], "ele": totals["ele"], "jd": totals["jd"], "mini": totals["mini"]}
     write_operating(19, total_data, find_section_total_row(prev, "营业数据", 19))
     for row in range(3, 20):
         for col in [9, 10, 19, 20, 29, 30, 39, 40, 48, 49]:
