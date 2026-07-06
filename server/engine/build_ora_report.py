@@ -16,6 +16,7 @@ from typing import Any
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
 
@@ -255,7 +256,7 @@ def get_prev(ws, row: int, col: int) -> Any:
     return ws.cell(row, col).value
 
 
-SECTION_TITLES = ("营业数据", "流量数据", "推广数据", "门店评分")
+SECTION_TITLES = ("营业数据", "流量数据", "推广数据", "门店评分", "业绩", "客单折扣")
 
 
 def cell_text(value: Any) -> str:
@@ -356,15 +357,37 @@ def find_section_header_row(sheet, title: str, fallback: int, code_col: int = 2,
 
 
 def find_section_total_row(sheet, title: str, fallback: int) -> int:
+    return find_section_total_row_or_none(sheet, title) or fallback
+
+
+def find_section_total_row_or_none(sheet, title: str) -> int | None:
     section_row = find_section_title_row(sheet, title)
     if not section_row:
-        return fallback
+        return None
     next_section = find_next_section_title_row(sheet, section_row) or ((sheet.max_row or section_row) + 1)
     for row in range(section_row + 1, next_section):
         for col in range(1, 5):
             if cell_text(sheet.cell(row, col).value) == "总计":
                 return row
-    return fallback
+    return None
+
+
+def contiguous_store_end(sheet, start: int, limit: int, code_col: int, name_col: int) -> int:
+    end = start - 1
+    seen = False
+    for row in range(start, max(start, limit) + 1):
+        code = cell_text(sheet.cell(row, code_col).value)
+        name = norm_store_name(sheet.cell(row, name_col).value)
+        label_values = {cell_text(sheet.cell(row, col).value) for col in range(1, min(sheet.max_column, 5) + 1)}
+        if "总计" in label_values or "合计" in label_values:
+            break
+        if code and code != "店号" or name and name != "店名":
+            seen = True
+            end = row
+            continue
+        if seen:
+            break
+    return end
 
 
 def section_store_row_maps(
@@ -379,10 +402,13 @@ def section_store_row_maps(
     if not section_row:
         return sheet_store_row_maps(sheet, fallback_start, fallback_end, code_col, name_col)
     header_row = find_section_header_row(sheet, title, fallback_start, code_col, name_col)
-    total_row = find_section_total_row(sheet, title, fallback_end + 1)
+    total_row = find_section_total_row_or_none(sheet, title)
     next_section = find_next_section_title_row(sheet, section_row) or ((sheet.max_row or section_row) + 1)
     start = header_row + 1
-    end = min(total_row - 1, next_section - 1)
+    if total_row:
+        end = min(total_row - 1, next_section - 1)
+    else:
+        end = contiguous_store_end(sheet, start, next_section - 1, code_col, name_col)
     if end < start:
         return sheet_store_row_maps(sheet, fallback_start, fallback_end, code_col, name_col)
     return sheet_store_row_maps(sheet, start, end, code_col, name_col)
@@ -459,6 +485,240 @@ def copy_row_style(ws, src_row: int, dst_row: int, max_col: int) -> None:
             dst.alignment = copy(src.alignment)
         if src.protection:
             dst.protection = copy(src.protection)
+
+
+def copy_row_template(ws, src_row: int, dst_row: int, max_col: int) -> None:
+    copy_row_style(ws, src_row, dst_row, max_col)
+    for col in range(1, max_col + 1):
+        src = ws.cell(src_row, col)
+        dst = ws.cell(dst_row, col)
+        value = src.value
+        if isinstance(value, str) and value.startswith("="):
+            try:
+                value = Translator(value, origin=src.coordinate).translate_formula(dst.coordinate)
+            except Exception:
+                pass
+        dst.value = value
+
+
+def infer_store_city(store: Store) -> str:
+    for city in ["北京", "成都", "合肥", "南京", "武汉", "西安", "上海", "深圳", "杭州"]:
+        if city in store.name or city in store.name_full:
+            return city
+    return ""
+
+
+def set_store_identity(
+    ws,
+    row: int,
+    store: Store,
+    code_col: int,
+    name_col: int,
+    *,
+    full_name_col: int | None = None,
+    mt_id_col: int | None = None,
+    ele_id_col: int | None = None,
+    city_col: int | None = None,
+    clear_open_col: int | None = None,
+) -> None:
+    if clear_open_col:
+        ws.cell(row, clear_open_col).value = None
+    ws.cell(row, code_col).value = store.code
+    ws.cell(row, name_col).value = store.name
+    if full_name_col:
+        ws.cell(row, full_name_col).value = store.name_full
+    if mt_id_col:
+        ws.cell(row, mt_id_col).value = store.mt_id
+    if ele_id_col:
+        ws.cell(row, ele_id_col).value = store.ele_id
+    if city_col:
+        ws.cell(row, city_col).value = infer_store_city(store)
+
+
+def ordered_store_rows(sheet, by_code: dict[str, int], by_name: dict[str, int], stores: list[Store]) -> list[int]:
+    known_codes = {store.code for store in stores}
+    known_names = {norm_store_name(store.name) for store in stores} | {norm_store_name(store.name_full) for store in stores}
+    rows = set()
+    for code, row in by_code.items():
+        if code in known_codes:
+            rows.add(row)
+    for name, row in by_name.items():
+        if name in known_names:
+            rows.add(row)
+    return sorted(rows)
+
+
+def append_missing_store_rows(
+    ws,
+    stores: list[Store],
+    by_code: dict[str, int],
+    by_name: dict[str, int],
+    insert_at: int,
+    code_col: int,
+    name_col: int,
+    **identity_kwargs,
+) -> int:
+    inserted = 0
+    for store in stores:
+        if matched_row_by_store(store, by_code, by_name):
+            continue
+        src_row = max(insert_at - 1, 1)
+        for merged in list(ws.merged_cells.ranges):
+            if merged.min_row <= insert_at <= merged.max_row:
+                ws.unmerge_cells(str(merged))
+        ws.insert_rows(insert_at)
+        copy_row_template(ws, src_row, insert_at, ws.max_column)
+        set_store_identity(ws, insert_at, store, code_col, name_col, **identity_kwargs)
+        by_code[store.code] = insert_at
+        by_name[norm_store_name(store.name)] = insert_at
+        by_name[norm_store_name(store.name_full)] = insert_at
+        insert_at += 1
+        inserted += 1
+    return inserted
+
+
+def ensure_section_store_rows(
+    ws,
+    title: str,
+    stores: list[Store],
+    fallback_start: int,
+    fallback_end: int,
+    code_col: int,
+    name_col: int,
+    **identity_kwargs,
+) -> None:
+    by_code, by_name = section_store_row_maps(ws, title, fallback_start, fallback_end, code_col, name_col)
+    missing = [store for store in stores if not matched_row_by_store(store, by_code, by_name)]
+    if not missing:
+        return
+
+    section_row = find_section_title_row(ws, title)
+    if section_row:
+        header_row = find_section_header_row(ws, title, fallback_start, code_col, name_col)
+        total_row = find_section_total_row_or_none(ws, title)
+        next_section = find_next_section_title_row(ws, section_row) or ((ws.max_row or section_row) + 1)
+        if total_row:
+            insert_at = total_row
+        else:
+            end = contiguous_store_end(ws, header_row + 1, next_section - 1, code_col, name_col)
+            insert_at = max(end + 1, header_row + 1)
+    else:
+        insert_at = fallback_end + 1
+    append_missing_store_rows(ws, stores, by_code, by_name, insert_at, code_col, name_col, **identity_kwargs)
+
+
+def ensure_titled_store_rows(
+    ws,
+    title_candidates: list[str],
+    stores: list[Store],
+    fallback_start: int,
+    fallback_end: int,
+    code_col: int,
+    name_col: int,
+    **identity_kwargs,
+) -> None:
+    by_code, by_name = titled_store_row_maps(ws, title_candidates, fallback_start, fallback_end, code_col, name_col)
+    missing = [store for store in stores if not matched_row_by_store(store, by_code, by_name)]
+    if not missing:
+        return
+
+    title_row = find_text_row(ws, title_candidates, max_col=8)
+    insert_at = fallback_end + 1
+    if title_row:
+        header_row = None
+        for row in range(title_row + 1, min(title_row + 8, ws.max_row or title_row) + 1):
+            if cell_text(ws.cell(row, code_col).value) in {"店号", "门店"}:
+                header_row = row
+                break
+        if header_row:
+            end = contiguous_store_end(ws, header_row + 1, min(header_row + 100, ws.max_row or header_row), code_col, name_col)
+            insert_at = max(end + 1, header_row + 1)
+    append_missing_store_rows(ws, stores, by_code, by_name, insert_at, code_col, name_col, **identity_kwargs)
+
+
+def ensure_fixed_block_store_rows(
+    ws,
+    stores: list[Store],
+    fallback_start: int,
+    fallback_end: int,
+    code_col: int,
+    name_col: int,
+    **identity_kwargs,
+) -> None:
+    end = contiguous_store_end(ws, fallback_start, max(fallback_end, fallback_start), code_col, name_col)
+    if end < fallback_start:
+        end = fallback_end
+    by_code, by_name = sheet_store_row_maps(ws, fallback_start, end, code_col, name_col)
+    insert_at = end + 1
+    append_missing_store_rows(ws, stores, by_code, by_name, insert_at, code_col, name_col, **identity_kwargs)
+
+
+def find_v2_score_header(ws) -> int | None:
+    for row in range(1, (ws.max_row or 1) + 1):
+        if cell_text(ws.cell(row, 1).value) != "店号" or cell_text(ws.cell(row, 2).value) != "店名":
+            continue
+        row_text = "|".join(cell_text(ws.cell(row, col).value) for col in range(1, min(ws.max_column, 10) + 1))
+        if "美团评分" in row_text and "饿了么评分" in row_text:
+            return row
+    return None
+
+
+def delivery_row_bounds(ws) -> tuple[int, int]:
+    start = 3
+    end = contiguous_store_end(ws, start, max(ws.max_row or start, start), 4, 2)
+    return start, max(end, start - 1)
+
+
+def ensure_delivery_store_rows(ws, stores: list[Store]) -> None:
+    start, end = delivery_row_bounds(ws)
+    by_mt, by_ele, by_name = delivery_row_maps(ws, start, max(end, start - 1))
+    by_code = {store.code: row for store in stores for row in [by_mt.get(store.mt_id) or by_ele.get(store.ele_id) or by_name.get(norm_store_name(store.name_full)) or by_name.get(norm_store_name(store.name))] if row}
+    by_name_rows = {norm_store_name(store.name): row for store in stores for row in [by_code.get(store.code)] if row}
+    missing = [store for store in stores if store.code not in by_code]
+    insert_at = max(end + 1, start)
+    for store in missing:
+        src_row = max(insert_at - 1, start)
+        ws.insert_rows(insert_at)
+        copy_row_template(ws, src_row, insert_at, ws.max_column)
+        set_store_identity(
+            ws,
+            insert_at,
+            store,
+            4,
+            2,
+            full_name_col=2,
+            ele_id_col=3,
+            mt_id_col=4,
+            city_col=1,
+        )
+        by_code[store.code] = insert_at
+        by_name_rows[norm_store_name(store.name)] = insert_at
+        insert_at += 1
+
+
+def ensure_report_store_rows(wb, stores: list[Store]) -> None:
+    cur = wb[CURRENT_SHEET]
+    ensure_section_store_rows(cur, "营业数据", stores, 3, 18, 2, 3, clear_open_col=1)
+    ensure_section_store_rows(cur, "流量数据", stores, 23, 38, 2, 3)
+    ensure_section_store_rows(cur, "推广数据", stores, 43, 58, 2, 3)
+    ensure_section_store_rows(cur, "门店评分", stores, 63, 78, 2, 3)
+
+    v2 = wb["V2"]
+    for merged in list(v2.merged_cells.ranges):
+        v2.unmerge_cells(str(merged))
+    ensure_section_store_rows(v2, "业绩", stores, 3, 18, 1, 2)
+    ensure_section_store_rows(v2, "客单折扣", stores, 23, 38, 1, 2)
+    ensure_section_store_rows(v2, "流量数据", stores, 43, 58, 1, 2)
+    ensure_section_store_rows(v2, "推广数据", stores, 64, 79, 1, 2)
+    score_header = find_v2_score_header(v2)
+    if score_header:
+        ensure_fixed_block_store_rows(v2, stores, score_header + 1, score_header + 16, 1, 2)
+
+    dist = wb["订单距离及实付区间"]
+    ensure_titled_store_rows(dist, ["订单距离分布"], stores, 5, 20, 2, 1)
+    ensure_titled_store_rows(dist, ["实付区间订单占比"], stores, 24, 39, 2, 1)
+
+    ensure_delivery_store_rows(wb["用户体验-配送"], stores)
 
 
 def build_store_list() -> tuple[list[Store], dict[str, str], dict[str, str]]:
@@ -1431,6 +1691,7 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
 
     operating_row_by_code, operating_row_by_name = section_store_row_maps(ws, "营业数据", 3, 18)
     prev_operating_by_code, prev_operating_by_name = section_store_row_maps(prev, "营业数据", 3, 18)
+    operating_total_row = find_section_total_row(ws, "营业数据", 19)
 
     def prev_value(row: int | None, col: int) -> Any:
         return get_prev(prev, row, col) if row else None
@@ -1496,8 +1757,8 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
             write_operating(row, metrics[store.code], prev_row)
 
     total_data = {"total": totals["total"], "mt": totals["mt"], "ele": totals["ele"], "jd": totals["jd"], "mini": totals["mini"]}
-    write_operating(19, total_data, find_section_total_row(prev, "营业数据", 19))
-    for row in range(3, 20):
+    write_operating(operating_total_row, total_data, find_section_total_row(prev, "营业数据", 19))
+    for row in ordered_store_rows(ws, operating_row_by_code, operating_row_by_name, stores) + [operating_total_row]:
         for col in [9, 10, 19, 20, 29, 30, 39, 40, 48, 49]:
             ws.cell(row, col).number_format = "#,##0"
 
@@ -1534,13 +1795,14 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
 
     traffic_row_by_code, traffic_row_by_name = section_store_row_maps(ws, "流量数据", 23, 38)
     prev_traffic_by_code, prev_traffic_by_name = section_store_row_maps(prev, "流量数据", 23, 38)
+    traffic_total_row = find_section_total_row(ws, "流量数据", 39)
     for store in stores:
         row = matched_row_by_store(store, traffic_row_by_code, traffic_row_by_name)
         if row:
             prev_row = matched_row_by_store(store, prev_traffic_by_code, prev_traffic_by_name)
             write_traffic(row, metrics[store.code], prev_row)
-    write_traffic(39, total_data, find_section_total_row(prev, "流量数据", 39))
-    for row in range(23, 40):
+    write_traffic(traffic_total_row, total_data, find_section_total_row(prev, "流量数据", 39))
+    for row in ordered_store_rows(ws, traffic_row_by_code, traffic_row_by_name, stores) + [traffic_total_row]:
         for col in [4, 5, 12, 14, 15, 22, 24, 25, 32]:
             ws.cell(row, col).number_format = "#,##0"
 
@@ -1573,12 +1835,13 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
             write(ws.cell(row, col), value)
 
     promo_row_by_code, promo_row_by_name = section_store_row_maps(ws, "推广数据", 43, 58)
+    promo_total_row = find_section_total_row(ws, "推广数据", 59)
     for store in stores:
         row = matched_row_by_store(store, promo_row_by_code, promo_row_by_name)
         if row:
             write_promo(row, metrics[store.code])
-    write_promo(59, total_data)
-    for row in range(43, 60):
+    write_promo(promo_total_row, total_data)
+    for row in ordered_store_rows(ws, promo_row_by_code, promo_row_by_name, stores) + [promo_total_row]:
         for col in [6, 11, 16, 21, 26, 31]:
             ws.cell(row, col).number_format = "0.0%"
         for col in [4, 8, 10, 14, 18, 20, 24, 28, 30]:
@@ -2148,13 +2411,25 @@ def estimate_text_rows(text: str, chars_per_row: int = 58) -> int:
 def write_merged_text_area(ws, text: str, start_row: int, start_col: int, end_col: int, min_rows: int = 20) -> None:
     needed_rows = max(min_rows, estimate_text_rows(text))
     end_row = start_row + needed_rows - 1
-    for merged in list(ws.merged_cells.ranges):
-        if not (merged.max_row < start_row or merged.min_row > end_row or merged.max_col < start_col or merged.min_col > end_col):
-            ws.unmerge_cells(str(merged))
+
+    def unmerge_overlapping() -> None:
+        for merged in list(ws.merged_cells.ranges):
+            if not (
+                merged.max_row < start_row
+                or merged.min_row > end_row
+                or merged.max_col < start_col
+                or merged.min_col > end_col
+            ):
+                ws.unmerge_cells(str(merged))
+
+    unmerge_overlapping()
     for row in range(start_row, end_row + 1):
         ws.row_dimensions[row].height = 24
         for col in range(start_col, end_col + 1):
-            ws.cell(row, col).value = None
+            cell = ws.cell(row, col)
+            if type(cell).__name__ != "MergedCell":
+                cell.value = None
+    unmerge_overlapping()
     ws.merge_cells(start_row=start_row, start_column=start_col, end_row=end_row, end_column=end_col)
     cell = ws.cell(start_row, start_col)
     cell.value = text
@@ -2254,7 +2529,7 @@ def write_email_content_sheet(wb) -> None:
     write_merged_text_area(ws, text, 1, 1, 10, min_rows=12)
 
 
-def write_v2(wb) -> None:
+def write_v2(wb, stores: list[Store]) -> None:
     ws = wb["V2"]
     sheet = CURRENT_SHEET
     cur_ws = wb[sheet]
@@ -2277,69 +2552,83 @@ def write_v2(wb) -> None:
         "门店评分": section_store_row_maps(prev_ws, "门店评分", 63, 78, 2, 3),
     }
 
-    def section_rows(title: str, cur_start: int, prev_start: int, v2_row: int, offset: int, cur_fallback: int) -> tuple[int, int | None]:
+    v2_maps = {
+        "业绩": section_store_row_maps(ws, "业绩", 3, 18, 1, 2),
+        "客单折扣": section_store_row_maps(ws, "客单折扣", 23, 38, 1, 2),
+        "流量数据": section_store_row_maps(ws, "流量数据", 43, 58, 1, 2),
+        "推广数据": section_store_row_maps(ws, "推广数据", 64, 79, 1, 2),
+    }
+    score_header = find_v2_score_header(ws)
+    if score_header:
+        score_start = score_header + 1
+        score_end = contiguous_store_end(ws, score_start, max(ws.max_row or score_start, score_start), 1, 2)
+        v2_score_maps = sheet_store_row_maps(ws, score_start, max(score_end, score_start - 1), 1, 2)
+    else:
+        score_end = contiguous_store_end(ws, 85, max(ws.max_row or 85, 85), 1, 2)
+        v2_score_maps = sheet_store_row_maps(ws, 85, max(score_end, 84), 1, 2)
+
+    def section_rows(title: str, v2_row: int, cur_fallback: int) -> tuple[int, int | None]:
         code = ws.cell(v2_row, 1).value
         name = ws.cell(v2_row, 2).value
         cur_row = matched_row_by_code_name(code, name, *cur_section_maps[title]) or cur_fallback
         prev_row = matched_row_by_code_name(code, name, *prev_section_maps[title])
         return cur_row, prev_row
 
-    for i in range(16):
-        r_v2 = 3 + i
-        r_cur, _ = section_rows("营业数据", 3, 3, r_v2, i, 3 + i)
+    for r_v2 in ordered_store_rows(ws, *v2_maps["业绩"], stores=stores):
+        r_cur, _ = section_rows("营业数据", r_v2, r_v2)
         ws.cell(r_v2, 3).value = f"='{sheet}'!D{r_cur}"
         ws.cell(r_v2, 4).value = f"='{sheet}'!F{r_cur}"
         ws.cell(r_v2, 5).value = f"='{sheet}'!P{r_cur}"
         ws.cell(r_v2, 6).value = f"='{sheet}'!Z{r_cur}"
-    ws.cell(19, 3).value = f"='{sheet}'!D{cur_operating_total}"
-    ws.cell(19, 4).value = f"='{sheet}'!F{cur_operating_total}"
-    ws.cell(19, 5).value = f"='{sheet}'!P{cur_operating_total}"
-    ws.cell(19, 6).value = f"='{sheet}'!Z{cur_operating_total}"
+    v2_perf_total = find_section_total_row(ws, "业绩", 19)
+    ws.cell(v2_perf_total, 3).value = f"='{sheet}'!D{cur_operating_total}"
+    ws.cell(v2_perf_total, 4).value = f"='{sheet}'!F{cur_operating_total}"
+    ws.cell(v2_perf_total, 5).value = f"='{sheet}'!P{cur_operating_total}"
+    ws.cell(v2_perf_total, 6).value = f"='{sheet}'!Z{cur_operating_total}"
 
-    for i in range(16):
-        r_v2 = 23 + i
-        r_cur, r_prev = section_rows("营业数据", 3, 3, r_v2, i, 3 + i)
+    for r_v2 in ordered_store_rows(ws, *v2_maps["客单折扣"], stores=stores):
+        r_cur, r_prev = section_rows("营业数据", r_v2, r_v2)
         ws.cell(r_v2, 3).value = f"='{sheet}'!K{r_cur}"
         ws.cell(r_v2, 4).value = f"='{sheet}'!L{r_cur}"
         ws.cell(r_v2, 5).value = f"='{sheet}'!H{r_cur}"
         ws.cell(r_v2, 6).value = f"=E{r_v2}-H{r_v2}"
         ws.cell(r_v2, 8).value = f"='上期'!H{r_prev}" if r_prev else None
-    ws.cell(39, 3).value = f"='{sheet}'!K{cur_operating_total}"
-    ws.cell(39, 4).value = f"='{sheet}'!L{cur_operating_total}"
-    ws.cell(39, 5).value = f"='{sheet}'!H{cur_operating_total}"
-    ws.cell(39, 6).value = "=E39-H39"
-    ws.cell(39, 8).value = f"='上期'!H{prev_operating_total}"
+    v2_discount_total = find_section_total_row(ws, "客单折扣", 39)
+    ws.cell(v2_discount_total, 3).value = f"='{sheet}'!K{cur_operating_total}"
+    ws.cell(v2_discount_total, 4).value = f"='{sheet}'!L{cur_operating_total}"
+    ws.cell(v2_discount_total, 5).value = f"='{sheet}'!H{cur_operating_total}"
+    ws.cell(v2_discount_total, 6).value = f"=E{v2_discount_total}-H{v2_discount_total}"
+    ws.cell(v2_discount_total, 8).value = f"='上期'!H{prev_operating_total}"
 
-    for i in range(16):
-        r_v2 = 43 + i
-        r_cur, r_prev = section_rows("流量数据", 23, 23, r_v2, i, 23 + i)
+    for r_v2 in ordered_store_rows(ws, *v2_maps["流量数据"], stores=stores):
+        r_cur, r_prev = section_rows("流量数据", r_v2, r_v2)
         for c_v2, c_cur in zip([3, 5, 6, 7, 8], ["D", "G", "H", "I", "K"]):
             ws.cell(r_v2, c_v2).value = f"='{sheet}'!{c_cur}{r_cur}"
         ws.cell(r_v2, 4).value = f"=IFERROR('{sheet}'!D{r_cur}/'上期'!D{r_prev}-1,0)" if r_prev else None
         ws.cell(r_v2, 4).number_format = "0.0%"
-    ws.cell(59, 3).value = f"='{sheet}'!D{cur_traffic_total}"
-    ws.cell(59, 4).value = f"=IFERROR('{sheet}'!D{cur_traffic_total}/'上期'!D{prev_traffic_total}-1,0)"
-    ws.cell(59, 4).number_format = "0.0%"
-    ws.cell(59, 5).value = f"='{sheet}'!G{cur_traffic_total}"
-    ws.cell(59, 6).value = f"='{sheet}'!H{cur_traffic_total}"
-    ws.cell(59, 7).value = f"='{sheet}'!I{cur_traffic_total}"
-    ws.cell(59, 8).value = f"='{sheet}'!K{cur_traffic_total}"
+    v2_traffic_total = find_section_total_row(ws, "流量数据", 59)
+    ws.cell(v2_traffic_total, 3).value = f"='{sheet}'!D{cur_traffic_total}"
+    ws.cell(v2_traffic_total, 4).value = f"=IFERROR('{sheet}'!D{cur_traffic_total}/'上期'!D{prev_traffic_total}-1,0)"
+    ws.cell(v2_traffic_total, 4).number_format = "0.0%"
+    ws.cell(v2_traffic_total, 5).value = f"='{sheet}'!G{cur_traffic_total}"
+    ws.cell(v2_traffic_total, 6).value = f"='{sheet}'!H{cur_traffic_total}"
+    ws.cell(v2_traffic_total, 7).value = f"='{sheet}'!I{cur_traffic_total}"
+    ws.cell(v2_traffic_total, 8).value = f"='{sheet}'!K{cur_traffic_total}"
 
-    for i in range(16):
-        r_v2 = 64 + i
-        r_cur, _ = section_rows("推广数据", 43, 43, r_v2, i, 43 + i)
+    for r_v2 in ordered_store_rows(ws, *v2_maps["推广数据"], stores=stores):
+        r_cur, _ = section_rows("推广数据", r_v2, r_v2)
         ws.cell(r_v2, 3).value = f"='{sheet}'!Q{r_cur}"
         ws.cell(r_v2, 4).value = f"='{sheet}'!S{r_cur}"
         ws.cell(r_v2, 5).value = f"='{sheet}'!AA{r_cur}"
         ws.cell(r_v2, 6).value = f"='{sheet}'!AC{r_cur}"
-    ws.cell(80, 3).value = f"='{sheet}'!Q{cur_promo_total}"
-    ws.cell(80, 4).value = f"='{sheet}'!S{cur_promo_total}"
-    ws.cell(80, 5).value = f"='{sheet}'!AA{cur_promo_total}"
-    ws.cell(80, 6).value = f"='{sheet}'!AC{cur_promo_total}"
+    v2_promo_total = find_section_total_row(ws, "推广数据", 80)
+    ws.cell(v2_promo_total, 3).value = f"='{sheet}'!Q{cur_promo_total}"
+    ws.cell(v2_promo_total, 4).value = f"='{sheet}'!S{cur_promo_total}"
+    ws.cell(v2_promo_total, 5).value = f"='{sheet}'!AA{cur_promo_total}"
+    ws.cell(v2_promo_total, 6).value = f"='{sheet}'!AC{cur_promo_total}"
 
-    for i in range(16):
-        r_v2 = 85 + i
-        r_cur, _ = section_rows("门店评分", 63, 63, r_v2, i, 63 + i)
+    for r_v2 in ordered_store_rows(ws, *v2_score_maps, stores=stores):
+        r_cur, _ = section_rows("门店评分", r_v2, r_v2)
         for c_v2, c_cur in zip([3, 4, 5, 6, 7, 8], ["N", "P", "Q", "X", "Z", "AA"]):
             ws.cell(r_v2, c_v2).value = f"='{sheet}'!{c_cur}{r_cur}"
 
@@ -2350,8 +2639,18 @@ def write_distance_and_paid(wb, prev_wb, distance, paid, stores: list[Store]) ->
     pct_cols = [3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33]
     prev_distance_maps = titled_store_row_maps(prev, ["订单距离分布"], 5, 20, 2, 1)
     prev_paid_maps = titled_store_row_maps(prev, ["实付区间订单占比"], 24, 39, 2, 1)
-    for r in range(5, 21):
+    distance_maps = titled_store_row_maps(ws, ["订单距离分布"], 5, 20, 2, 1)
+    paid_maps = titled_store_row_maps(ws, ["实付区间订单占比"], 24, 39, 2, 1)
+    distance_rows: list[int] = []
+    paid_rows: list[int] = []
+    for store in stores:
+        r = matched_row_by_store(store, *distance_maps)
+        if not r:
+            continue
+        distance_rows.append(r)
         code = store_code_by_sheet_row(ws, r, stores, 2, 1)
+        for label_col in (13, 24):
+            ws.cell(r, label_col).value = code
         prev_r = matched_row_by_code_name(code, ws.cell(r, 1).value, *prev_distance_maps)
         p = distance.get(code, {"total": {}, "mt": {}, "ele": {}})
         # Previous current values into prior columns.
@@ -2373,8 +2672,13 @@ def write_distance_and_paid(wb, prev_wb, distance, paid, stores: list[Store]) ->
         for current_col, prior_col, delta_col in [(3, 4, 5), (6, 7, 8), (9, 10, 11), (14, 15, 16), (17, 18, 19), (20, 21, 22), (25, 26, 27), (28, 29, 30), (31, 32, 33)]:
             write(ws.cell(r, delta_col), diff(ws.cell(r, current_col).value, ws.cell(r, prior_col).value))
 
-        r2 = r + 19
+        r2 = matched_row_by_store(store, *paid_maps)
+        if not r2:
+            continue
+        paid_rows.append(r2)
         paid_code = store_code_by_sheet_row(ws, r2, stores, 2, 1) or code
+        for label_col in (13, 24):
+            ws.cell(r2, label_col).value = paid_code
         prev_r2 = matched_row_by_code_name(paid_code, ws.cell(r2, 1).value, *prev_paid_maps)
         q = paid.get(paid_code, {"total": {}, "mt": {}, "ele": {}})
         for cur_col, prev_col in [(3, 4), (6, 7), (9, 10), (14, 15), (17, 18), (20, 21), (25, 26), (28, 29), (31, 32)]:
@@ -2394,7 +2698,7 @@ def write_distance_and_paid(wb, prev_wb, distance, paid, stores: list[Store]) ->
             write(ws.cell(r2, col), val)
         for current_col, prior_col, delta_col in [(3, 4, 5), (6, 7, 8), (9, 10, 11), (14, 15, 16), (17, 18, 19), (20, 21, 22), (25, 26, 27), (28, 29, 30), (31, 32, 33)]:
             write(ws.cell(r2, delta_col), diff(ws.cell(r2, current_col).value, ws.cell(r2, prior_col).value))
-    for row in list(range(5, 21)) + list(range(24, 40)):
+    for row in distance_rows + paid_rows:
         for col in pct_cols:
             ws.cell(row, col).number_format = "0.0%"
 
@@ -2545,8 +2849,10 @@ def write_delivery(wb, prev_wb, mt_delivery, ele_delivery) -> None:
 def fill_delivery_values(wb, prev_wb, mt_delivery, ele_delivery, mt_to_code, ele_to_code) -> None:
     ws = wb["用户体验-配送"]
     prev = prev_wb["用户体验-配送"]
-    prev_maps = delivery_row_maps(prev)
-    for row in range(3, 19):
+    prev_start, prev_end = delivery_row_bounds(prev)
+    prev_maps = delivery_row_maps(prev, prev_start, max(prev_end, prev_start - 1))
+    start, end = delivery_row_bounds(ws)
+    for row in range(start, end + 1):
         mt_code = mt_to_code.get(norm_id(ws.cell(row, 4).value))
         ele_code = ele_to_code.get(norm_id(ws.cell(row, 3).value))
         prev_row = matched_delivery_row(ws, row, prev_maps) or row
@@ -2638,7 +2944,7 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
     wb_values = load_workbook(path, data_only=True)
     validation["visible_sheets"] = [ws.title for ws in wb_formula.worksheets if ws.sheet_state == "visible"]
     v2_refs = []
-    for row in range(3, 20):
+    for row in range(1, (wb_formula["V2"].max_row or 1) + 1):
         value = wb_formula["V2"].cell(row, 3).value
         if isinstance(value, str) and CURRENT_SHEET in value:
             v2_refs.append(row)
@@ -2649,25 +2955,30 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
         for c in range(1, 51)
     )
     validation["store_presence"] = {}
-    checks = {
-        CURRENT_SHEET: [(3, 18, 2), (23, 38, 2), (43, 58, 2), (63, 78, 2)],
-        "V2": [(3, 18, 1), (23, 38, 1), (43, 58, 1), (64, 79, 1), (85, 100, 1)],
-        "订单距离及实付区间": [(5, 20, 2), (24, 39, 2)],
-    }
-    for sheet, ranges in checks.items():
-        ws = wb_formula[sheet]
-        codes = set()
-        for min_r, max_r, col in ranges:
-            for r in range(min_r, max_r + 1):
-                value = ws.cell(r, col).value
-                if value:
-                    codes.add(str(value))
-        validation["store_presence"][sheet] = sorted(set(s.code for s in stores) - codes)
+    expected_codes = set(s.code for s in stores)
+    cur_ws = wb_formula[CURRENT_SHEET]
+    v2_ws = wb_formula["V2"]
+    dist_ws = wb_formula["订单距离及实付区间"]
+    current_codes = set()
+    for title, start, end in [("营业数据", 3, 18), ("流量数据", 23, 38), ("推广数据", 43, 58), ("门店评分", 63, 78)]:
+        current_codes.update(section_store_row_maps(cur_ws, title, start, end, 2, 3)[0].keys())
+    v2_codes = set()
+    for title, start, end in [("业绩", 3, 18), ("客单折扣", 23, 38), ("流量数据", 43, 58), ("推广数据", 64, 79)]:
+        v2_codes.update(section_store_row_maps(v2_ws, title, start, end, 1, 2)[0].keys())
+    score_end = contiguous_store_end(v2_ws, 85, max(v2_ws.max_row or 85, 85), 1, 2)
+    v2_codes.update(sheet_store_row_maps(v2_ws, 85, max(score_end, 84), 1, 2)[0].keys())
+    distance_codes = set(titled_store_row_maps(dist_ws, ["订单距离分布"], 5, 20, 2, 1)[0].keys())
+    distance_codes.update(titled_store_row_maps(dist_ws, ["实付区间订单占比"], 24, 39, 2, 1)[0].keys())
+    validation["store_presence"][CURRENT_SHEET] = sorted(expected_codes - current_codes)
+    validation["store_presence"]["V2"] = sorted(expected_codes - v2_codes)
+    validation["store_presence"]["订单距离及实付区间"] = sorted(expected_codes - distance_codes)
+    current_total_row = find_section_total_row(cur_ws, "营业数据", 19)
+    promo_total_row = find_section_total_row(cur_ws, "推广数据", 59)
     validation["key_cells"] = {
-        "current_total_sales": wb_values[CURRENT_SHEET]["E19"].value,
-        "current_total_orders": wb_values[CURRENT_SHEET]["J19"].value,
-        "current_mt_ad_spend": wb_values[CURRENT_SHEET]["Q59"].value,
-        "current_ele_ad_spend": wb_values[CURRENT_SHEET]["AA59"].value,
+        "current_total_sales": wb_values[CURRENT_SHEET][f"E{current_total_row}"].value,
+        "current_total_orders": wb_values[CURRENT_SHEET][f"J{current_total_row}"].value,
+        "current_mt_ad_spend": wb_values[CURRENT_SHEET][f"Q{promo_total_row}"].value,
+        "current_ele_ad_spend": wb_values[CURRENT_SHEET][f"AA{promo_total_row}"].value,
         "single_top_product": wb_values["商品销售排行-单品"]["C2"].value,
         "package_total_qty": wb_values["商品销售排行-套餐"]["C" + str(2 + 7 + len(new_packages))].value,
         "complaint_total": wb_values["用户体验-客诉"]["D17"].value,
@@ -2697,8 +3008,9 @@ def main() -> None:
     wb = load_workbook(TEMPLATE)
     ensure_current_sheet(wb)
     copy_previous_week_to_previous_sheet(wb, prev_wb, prev_wb_format)
+    ensure_report_store_rows(wb, stores)
     write_main_sheet(wb, prev_wb, stores, metrics, totals)
-    write_v2(wb)
+    write_v2(wb, stores)
     write_distance_and_paid(wb, prev_wb, distance, paid, stores)
     write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg_qty, totals["biz_days"] or PERIOD_DAYS, new_packages)
     write_complaints(wb, prev_wb, complaints, complaint_top)
