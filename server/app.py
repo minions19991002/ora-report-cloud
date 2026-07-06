@@ -209,6 +209,7 @@ def run_job(job_id: str, job_dir: Path, env: dict[str, str], output_name: str) -
     try:
         set_job(job_id, status="running", message="正在生成报表")
         output_path = run_engine(env, job_dir / "work", output_name)
+        JOB_ROOT.mkdir(parents=True, exist_ok=True)
         final_path = JOB_ROOT / f"{job_id}.xlsx"
         shutil.copy2(output_path, final_path)
         set_job(job_id, status="done", message="生成完成", filename=output_name, path=str(final_path))
@@ -289,6 +290,7 @@ async def start_upload_session_job(upload_id: str, request: Request, background_
     if missing:
         raise HTTPException(status_code=400, detail=f"缺少上传文件：{', '.join(missing)}")
 
+    JOB_ROOT.mkdir(parents=True, exist_ok=True)
     job_id = uuid4().hex
     job_dir = Path(str(session["root_dir"]))
     work_dir = Path(str(session["work_dir"]))
