@@ -277,6 +277,55 @@ def sheet_store_row_maps(sheet, start: int, end: int, code_col: int, name_col: i
     return by_code, by_name
 
 
+def find_text_row(sheet, candidates: list[str], start_row: int = 1, end_row: int | None = None, max_col: int | None = None) -> int | None:
+    last_row = min(end_row or sheet.max_row or 1, sheet.max_row or 1)
+    last_col = min(max_col or sheet.max_column or 1, sheet.max_column or 1)
+    normalized = [norm_header(candidate) for candidate in candidates]
+    for row in range(start_row, last_row + 1):
+        for col in range(1, last_col + 1):
+            text = norm_header(sheet.cell(row, col).value)
+            if text and any(candidate in text for candidate in normalized):
+                return row
+    return None
+
+
+def titled_store_row_maps(
+    sheet,
+    title_candidates: list[str],
+    fallback_start: int,
+    fallback_end: int,
+    code_col: int,
+    name_col: int,
+) -> tuple[dict[str, int], dict[str, int]]:
+    title_row = find_text_row(sheet, title_candidates, max_col=8)
+    if not title_row:
+        return sheet_store_row_maps(sheet, fallback_start, fallback_end, code_col, name_col)
+
+    header_row = None
+    for row in range(title_row + 1, min(title_row + 8, sheet.max_row or title_row) + 1):
+        if cell_text(sheet.cell(row, code_col).value) in {"店号", "门店"}:
+            header_row = row
+            break
+    if not header_row:
+        return sheet_store_row_maps(sheet, fallback_start, fallback_end, code_col, name_col)
+
+    start = header_row + 1
+    end = start - 1
+    seen = False
+    for row in range(start, min(start + 80, sheet.max_row or start) + 1):
+        code = cell_text(sheet.cell(row, code_col).value)
+        name = norm_store_name(sheet.cell(row, name_col).value)
+        if not code and not name:
+            if seen:
+                break
+            continue
+        seen = True
+        end = row
+    if end < start:
+        return sheet_store_row_maps(sheet, fallback_start, fallback_end, code_col, name_col)
+    return sheet_store_row_maps(sheet, start, end, code_col, name_col)
+
+
 def find_section_title_row(sheet, title: str) -> int | None:
     max_col = min(sheet.max_column or 1, 8)
     for row in range(1, (sheet.max_row or 1) + 1):
@@ -2177,8 +2226,8 @@ def write_distance_and_paid(wb, prev_wb, distance, paid, stores: list[Store]) ->
     ws = wb["订单距离及实付区间"]
     prev = prev_wb["订单距离及实付区间"]
     pct_cols = [3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33]
-    prev_distance_maps = sheet_store_row_maps(prev, 5, 20, 2, 1)
-    prev_paid_maps = sheet_store_row_maps(prev, 24, 39, 2, 1)
+    prev_distance_maps = titled_store_row_maps(prev, ["订单距离分布"], 5, 20, 2, 1)
+    prev_paid_maps = titled_store_row_maps(prev, ["实付区间订单占比"], 24, 39, 2, 1)
     for r in range(5, 21):
         code = store_code_by_sheet_row(ws, r, stores, 2, 1)
         prev_r = matched_row_by_code_name(code, ws.cell(r, 1).value, *prev_distance_maps)
