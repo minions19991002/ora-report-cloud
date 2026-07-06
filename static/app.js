@@ -216,7 +216,8 @@ async function classifyByHeader(file) {
 
 async function classify(file) {
   const nameResult = classifyByName(file);
-  if (nameResult?.score >= nameResult?.maxScore) {
+  const ambiguousReportName = ["previous", "template"].includes(nameResult?.item?.key);
+  if (nameResult?.score >= nameResult?.maxScore && !ambiguousReportName) {
     return nameResult;
   }
   const headerResult = await classifyByHeader(file);
