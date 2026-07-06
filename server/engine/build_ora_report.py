@@ -2623,6 +2623,7 @@ def write_email_content_sheet(wb) -> None:
         ws.column_dimensions[get_column_letter(col)].width = 14
     text = build_performance_email_text(wb)
     write_merged_text_area(ws, text, 1, 1, 10, min_rows=12)
+    ws.sheet_state = "hidden"
 
 
 def write_v2(wb, stores: list[Store]) -> None:
