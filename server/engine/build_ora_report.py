@@ -2244,7 +2244,7 @@ def fmt_pct_abs(value: float | None) -> str:
 
 def fmt_signed_pct(value: float | None) -> str:
     if value is None or abs(round(value * 100, 1)) <= 0:
-        return "持平0.0%"
+        return "持平"
     sign = "+" if value > 0 else "-"
     return f"{sign}{abs(value) * 100:.1f}%"
 
@@ -2257,7 +2257,7 @@ def fmt_sales_change(label: str, cur: float, prev: float) -> str:
     delta = cur - prev
     gr = growth(cur, prev)
     if int(round(delta)) == 0 and (gr is None or abs(round(gr * 100, 1)) <= 0):
-        return f"{label}持平0.0%（0元）"
+        return f"{label}持平（0元）"
     word = trend_word(delta)
     if gr is None:
         return f"{label}{word}0.0%（{fmt_signed_int(delta, '元')}）"
@@ -2289,7 +2289,7 @@ def fmt_platform_sales(label: str, cur: float, prev: float) -> str:
     delta = cur - prev
     gr = growth(cur, prev)
     if int(round(delta)) == 0 and (gr is None or abs(round(gr * 100, 1)) <= 0):
-        return f"{label}sales持平0.0%"
+        return f"{label}sales持平"
     if gr is None:
         return f"{label}sales{trend_word(delta)}0.0%"
     return f"{label}sales{trend_word(delta)}{fmt_pct_abs(gr)}"
@@ -2552,7 +2552,7 @@ def email_change_word(value: float) -> str:
 
 def email_pct_phrase(value: float | None) -> str:
     if value is None or abs(round(value * 100, 1)) <= 0:
-        return "持平0.0%"
+        return "持平"
     return f"{email_change_word(value)}{fmt_pct_abs(value)}"
 
 
