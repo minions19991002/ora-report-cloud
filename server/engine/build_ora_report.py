@@ -1176,7 +1176,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_exp_count = el.get("曝光次数", 0.0)
         mt_base_gmv = mt.get("优惠前总额", 0.0)
         ele_base_gmv = el.get("营业额", 0.0)
-        total_discount_base = total_op["sales"]
+        total_discount_base = total_op["sales"] + total_op["discount"]
 
         mt_paid_exp = mt.get("曝光提升数(次)", 0.0) if mt_paid_exp_from_store else mpr.get("曝光提升数(次)", 0.0)
         ele_paid_exp = el.get("曝光提升数", 0.0) if ele_paid_exp_from_store else epr.get("曝光提升数", 0.0)
@@ -1233,8 +1233,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "sales": mt_sales,
                 "sales_daily": safe_div(mt_sales, den),
                 "discount": mt_discount,
-                "discount_base": mt_sales,
-                "discount_rate": safe_div(mt_discount, mt_sales),
+                "discount_base": mt_sales + mt_discount,
+                "discount_rate": safe_div(mt_discount, mt_sales + mt_discount),
                 "orders": mt_orders,
                 "orders_daily": safe_div(mt_orders, den),
                 "at": safe_div(mt_sales, mt_orders),
@@ -1258,8 +1258,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "sales": ele_sales,
                 "sales_daily": safe_div(ele_sales, den),
                 "discount": ele_discount,
-                "discount_base": ele_sales,
-                "discount_rate": safe_div(ele_discount, ele_sales),
+                "discount_base": ele_sales + ele_discount,
+                "discount_rate": safe_div(ele_discount, ele_sales + ele_discount),
                 "orders": ele_orders,
                 "orders_daily": safe_div(ele_orders, den),
                 "at": safe_div(ele_sales, ele_orders),
@@ -1283,8 +1283,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "sales": jd_sales,
                 "sales_daily": safe_div(jd_sales, den),
                 "discount": jd_discount,
-                "discount_base": jd_sales,
-                "discount_rate": safe_div(jd_discount, jd_sales),
+                "discount_base": jd_sales + jd_discount,
+                "discount_rate": safe_div(jd_discount, jd_sales + jd_discount),
                 "orders": jd_orders,
                 "orders_daily": safe_div(jd_orders, den),
                 "at": safe_div(jd_sales, jd_orders),
@@ -1293,8 +1293,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "sales": mini_sales,
                 "sales_daily": safe_div(mini_sales, den),
                 "discount": mini_discount,
-                "discount_base": mini_sales,
-                "discount_rate": safe_div(mini_discount, mini_sales),
+                "discount_base": mini_sales + mini_discount,
+                "discount_rate": safe_div(mini_discount, mini_sales + mini_discount),
                 "orders": mini_orders,
                 "orders_daily": safe_div(mini_orders, den),
                 "at": safe_div(mini_sales, mini_orders),
