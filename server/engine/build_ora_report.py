@@ -750,6 +750,26 @@ def sum_by_store(df: pd.DataFrame, store_col: str, cols: list[str]) -> dict[str,
     return result
 
 
+PROMO_SALES_ALIASES = ["订单交易额(元)", "订单交易额", "推广营业额"]
+
+
+def normalize_numeric_column(df: pd.DataFrame, target: str, aliases: list[str], source_name: str) -> pd.DataFrame:
+    exact_columns = {str(col): col for col in df.columns}
+    for alias in aliases:
+        if alias in exact_columns:
+            df[target] = to_num(df[exact_columns[alias]])
+            return df
+
+    normalized_columns = {norm_header(col): col for col in df.columns}
+    for alias in aliases:
+        col = normalized_columns.get(norm_header(alias))
+        if col is not None:
+            df[target] = to_num(df[col])
+            return df
+
+    raise KeyError(f"{source_name} 缺少必要表头：{' / '.join(aliases)}")
+
+
 def ora_daily_scope(value: Any) -> str | None:
     text = str(value or "").strip()
     if "美团" in text:
@@ -1089,10 +1109,11 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
             mask |= mt_promo[col].astype(str).apply(lambda x: any(term in x for term in mt_exclude))
         mt_promo = mt_promo[~mask].copy()
     mt_promo = mt_promo[mt_promo["code"].notna()].copy()
+    mt_promo = normalize_numeric_column(mt_promo, "推广营业额", PROMO_SALES_ALIASES, "美团推广.xlsx")
     mt_pr = sum_by_store(
         mt_promo,
         "code",
-        ["推广消费实付(元)", "曝光提升数(次)", "访问提升数(次)", "订单原价交易额(元)"],
+        ["推广消费实付(元)", "曝光提升数(次)", "访问提升数(次)", "推广营业额"],
     )
 
     ele_promo = current_rows(read_excel("饿了么推广.xlsx"), "日期")
@@ -1105,10 +1126,11 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
             mask |= ele_promo[col].astype(str).str.contains("增量助手", na=False)
         ele_promo = ele_promo[~mask].copy()
     ele_promo = ele_promo[ele_promo["code"].notna()].copy()
+    ele_promo = normalize_numeric_column(ele_promo, "推广营业额", PROMO_SALES_ALIASES, "饿了么推广.xlsx")
     ele_pr = sum_by_store(
         ele_promo,
         "code",
-        ["推广现金消费(元)", "曝光提升数", "进店提升数", "订单原价交易额(元)"],
+        ["推广现金消费(元)", "曝光提升数", "进店提升数", "推广营业额"],
     )
 
     ora_operating = compute_ora_daily_operating(stores, mt_to_code, ele_to_code)
@@ -1174,8 +1196,6 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_buyers = el.get("下单人数", 0.0)
         mt_exp_count = mt.get("曝光次数", 0.0)
         ele_exp_count = el.get("曝光次数", 0.0)
-        mt_base_gmv = mt.get("优惠前总额", 0.0)
-        ele_base_gmv = el.get("营业额", 0.0)
         total_discount_base = total_op["sales"] + total_op["discount"]
 
         mt_paid_exp = mt.get("曝光提升数(次)", 0.0) if mt_paid_exp_from_store else mpr.get("曝光提升数(次)", 0.0)
@@ -1184,8 +1204,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_spend = epr.get("推广现金消费(元)", 0.0)
         mt_visit_lift = mpr.get("访问提升数(次)", 0.0)
         ele_visit_lift = epr.get("进店提升数", 0.0)
-        mt_orig = mpr.get("订单原价交易额(元)", 0.0)
-        ele_orig = epr.get("订单原价交易额(元)", 0.0)
+        mt_ad_sales = mpr.get("推广营业额", 0.0)
+        ele_ad_sales = epr.get("推广营业额", 0.0)
 
         total_sales = total_op["sales"]
         total_discount = total_op["discount"]
@@ -1197,7 +1217,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         total_paid_exp = mt_paid_exp + ele_paid_exp
         total_spend = mt_spend + ele_spend
         total_visit_lift = mt_visit_lift + ele_visit_lift
-        total_orig = mt_orig + ele_orig
+        total_ad_sales = mt_ad_sales + ele_ad_sales
 
         score_vals = [v for v in [mt_score.get(code), ele_score.get(code)] if v not in (None, 0)]
         metrics[code] = {
@@ -1222,9 +1242,9 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_share": safe_div(total_paid_exp, total_exp_count),
                 "ad_spend": total_spend,
                 "ad_visits": total_visit_lift,
-                "ad_roi": safe_div(total_orig, total_spend),
-                "ad_orig": total_orig,
-                "ad_gmv_share": safe_div(total_orig, mt_base_gmv + ele_base_gmv),
+                "ad_roi": safe_div(total_ad_sales, total_spend),
+                "ad_orig": total_ad_sales,
+                "ad_gmv_share": safe_div(total_ad_sales, total_sales),
                 "score": sum(score_vals) / len(score_vals) if score_vals else None,
                 "good": mt_r.get(code, {}).get("good", 0.0) + ele_r.get(code, {}).get("good", 0.0),
                 "bad": mt_r.get(code, {}).get("bad", 0.0) + ele_r.get(code, {}).get("bad", 0.0),
@@ -1247,9 +1267,9 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_share": safe_div(mt_paid_exp, mt_exp_count),
                 "ad_spend": mt_spend,
                 "ad_visits": mt_visit_lift,
-                "ad_roi": safe_div(mt_orig, mt_spend),
-                "ad_orig": mt_orig,
-                "ad_gmv_share": safe_div(mt_orig, mt_base_gmv),
+                "ad_roi": safe_div(mt_ad_sales, mt_spend),
+                "ad_orig": mt_ad_sales,
+                "ad_gmv_share": safe_div(mt_ad_sales, mt_sales),
                 "score": mt_score.get(code),
                 "good": mt_r.get(code, {}).get("good", 0.0),
                 "bad": mt_r.get(code, {}).get("bad", 0.0),
@@ -1272,9 +1292,9 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_share": safe_div(ele_paid_exp, ele_exp_count),
                 "ad_spend": ele_spend,
                 "ad_visits": ele_visit_lift,
-                "ad_roi": safe_div(ele_orig, ele_spend),
-                "ad_orig": ele_orig,
-                "ad_gmv_share": safe_div(ele_orig, ele_base_gmv),
+                "ad_roi": safe_div(ele_ad_sales, ele_spend),
+                "ad_orig": ele_ad_sales,
+                "ad_gmv_share": safe_div(ele_ad_sales, ele_sales),
                 "score": ele_score.get(code),
                 "good": ele_r.get(code, {}).get("good", 0.0),
                 "bad": ele_r.get(code, {}).get("bad", 0.0),
@@ -1347,15 +1367,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal["order_rate"] = safe_div(buyer_sum, entry_sum)
         subtotal["ad_share"] = safe_div(subtotal["paid_exp"], subtotal["exp_count"])
         subtotal["ad_roi"] = safe_div(subtotal["ad_orig"], subtotal["ad_spend"])
-        if scope == "mt":
-            base_gmv = sum(mt_ag.get(s.code, {}).get("优惠前总额", 0.0) for s in stores)
-        elif scope == "ele":
-            base_gmv = sum(ele_ag.get(s.code, {}).get("营业额", 0.0) for s in stores)
-        elif scope in {"jd", "mini"}:
-            base_gmv = 0.0
-        else:
-            base_gmv = sum(mt_ag.get(s.code, {}).get("优惠前总额", 0.0) + ele_ag.get(s.code, {}).get("营业额", 0.0) for s in stores)
-        subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], base_gmv)
+        subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], subtotal.get("sales", 0.0))
         totals[scope] = subtotal
     return metrics, totals
 
@@ -2139,7 +2151,7 @@ def resolve_analysis_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]
             "ad_spend": nth_header_col(sheet, promo_header, ["消耗金额"], occurrence, exact=False),
             "ad_visits": nth_header_col(sheet, promo_header, ["进店数"], occurrence, exact=False),
             "ad_roi": nth_header_col(sheet, promo_header, ["营业额ROI"], occurrence, exact=False),
-            "ad_orig": nth_header_col(sheet, promo_header, ["订单原价交易额"], occurrence, exact=False),
+            "ad_orig": nth_header_col(sheet, promo_header, ["推广营业额", "订单交易额", "订单原价交易额"], occurrence, exact=False),
         }
 
     schema["门店评分"]["total"] = {
