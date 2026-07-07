@@ -862,6 +862,7 @@ def sum_existing_columns(df: pd.DataFrame, cols: list[str]) -> pd.Series:
 
 
 PROMO_SALES_ALIASES = ["订单交易额(元)", "订单交易额", "订单原价交易额(元)", "订单原价交易额", "推广营业额"]
+PROMO_ORDER_ALIASES = ["订单提升数(单)", "订单提升数", "推广订单数", "订单数", "下单数"]
 PROMO_ROI_ALIASES = ["实付ROI", "营业额ROI"]
 PROMO_DEAL_AMOUNT_ALIASES = ["订单交易额", "订单原价交易额", "推广营业额"]
 ORA_DAILY_VALUE_COLUMNS = {
@@ -1135,6 +1136,8 @@ def normalize_generated_metric_labels(wb) -> None:
         "营业额ROI": "实付ROI",
     }
     for ws in wb.worksheets:
+        if ws.title == PROMO_COMPARISON_SHEET:
+            continue
         for row in ws.iter_rows():
             for cell in row:
                 value = cell.value
@@ -1276,10 +1279,11 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         mt_promo = mt_promo[~mask].copy()
     mt_promo = mt_promo[mt_promo["code"].notna()].copy()
     mt_promo = normalize_numeric_column(mt_promo, "推广营业额", PROMO_SALES_ALIASES, "美团推广.xlsx")
+    mt_promo = normalize_numeric_column(mt_promo, "推广订单数", PROMO_ORDER_ALIASES, "美团推广.xlsx")
     mt_pr = sum_by_store(
         mt_promo,
         "code",
-        ["推广消费实付(元)", "曝光提升数(次)", "访问提升数(次)", "推广营业额"],
+        ["推广消费实付(元)", "曝光提升数(次)", "访问提升数(次)", "推广营业额", "推广订单数"],
     )
 
     ele_promo = current_rows(read_excel("饿了么推广.xlsx"), "日期")
@@ -1293,10 +1297,11 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_promo = ele_promo[~mask].copy()
     ele_promo = ele_promo[ele_promo["code"].notna()].copy()
     ele_promo = normalize_numeric_column(ele_promo, "推广营业额", PROMO_SALES_ALIASES, "饿了么推广.xlsx")
+    ele_promo = normalize_numeric_column(ele_promo, "推广订单数", PROMO_ORDER_ALIASES, "饿了么推广.xlsx")
     ele_pr = sum_by_store(
         ele_promo,
         "code",
-        ["推广现金消费(元)", "曝光提升数", "进店提升数", "推广营业额"],
+        ["推广现金消费(元)", "曝光提升数", "进店提升数", "推广营业额", "推广订单数"],
     )
 
     ora_operating = compute_ora_daily_operating(stores, mt_to_code, ele_to_code)
@@ -1372,6 +1377,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_visit_lift = epr.get("进店提升数", 0.0)
         mt_ad_sales = mpr.get("推广营业额", 0.0)
         ele_ad_sales = epr.get("推广营业额", 0.0)
+        mt_ad_orders = mpr.get("推广订单数", 0.0)
+        ele_ad_orders = epr.get("推广订单数", 0.0)
         mt_ad_gmv_base = mt.get("_ad_gmv_base", 0.0) if mt_has_ad_gmv_base else mt_sales
         ele_ad_gmv_base = el.get("_ad_gmv_base", 0.0) if ele_has_ad_gmv_base else ele_sales
 
@@ -1386,6 +1393,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         total_spend = mt_spend + ele_spend
         total_visit_lift = mt_visit_lift + ele_visit_lift
         total_ad_sales = mt_ad_sales + ele_ad_sales
+        total_ad_orders = mt_ad_orders + ele_ad_orders
         total_ad_gmv_base = mt_ad_gmv_base + ele_ad_gmv_base
 
         score_vals = [v for v in [mt_score.get(code), ele_score.get(code)] if v not in (None, 0)]
@@ -1413,6 +1421,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_visits": total_visit_lift,
                 "ad_roi": safe_div(total_ad_sales, total_spend),
                 "ad_orig": total_ad_sales,
+                "ad_orders": total_ad_orders,
+                "ad_activity": safe_div(total_ad_orders, total_orders),
                 "ad_gmv_base": total_ad_gmv_base,
                 "ad_gmv_share": safe_div(total_ad_sales, total_ad_gmv_base),
                 "score": sum(score_vals) / len(score_vals) if score_vals else None,
@@ -1439,6 +1449,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_visits": mt_visit_lift,
                 "ad_roi": safe_div(mt_ad_sales, mt_spend),
                 "ad_orig": mt_ad_sales,
+                "ad_orders": mt_ad_orders,
+                "ad_activity": safe_div(mt_ad_orders, mt_orders),
                 "ad_gmv_base": mt_ad_gmv_base,
                 "ad_gmv_share": safe_div(mt_ad_sales, mt_ad_gmv_base),
                 "score": mt_score.get(code),
@@ -1465,6 +1477,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_visits": ele_visit_lift,
                 "ad_roi": safe_div(ele_ad_sales, ele_spend),
                 "ad_orig": ele_ad_sales,
+                "ad_orders": ele_ad_orders,
+                "ad_activity": safe_div(ele_ad_orders, ele_orders),
                 "ad_gmv_base": ele_ad_gmv_base,
                 "ad_gmv_share": safe_div(ele_ad_sales, ele_ad_gmv_base),
                 "score": ele_score.get(code),
@@ -1508,7 +1522,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal: dict[str, float] = defaultdict(float)
         for code in [s.code for s in stores]:
             for key, value in metrics[code][scope].items():
-                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "ad_share", "ad_roi", "ad_gmv_share", "score"}:
+                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "ad_share", "ad_roi", "ad_activity", "ad_gmv_share", "score"}:
                     continue
                 if isinstance(value, (int, float)):
                     subtotal[key] += float(value)
@@ -1539,6 +1553,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal["order_rate"] = safe_div(buyer_sum, entry_sum)
         subtotal["ad_share"] = safe_div(subtotal["paid_exp"], subtotal["exp_count"])
         subtotal["ad_roi"] = safe_div(subtotal["ad_orig"], subtotal["ad_spend"])
+        subtotal["ad_activity"] = safe_div(subtotal.get("ad_orders", 0.0), subtotal.get("orders", 0.0))
         ad_gmv_base = subtotal.get("ad_gmv_base", 0.0) if scope in {"total", "mt", "ele"} else subtotal.get("sales", 0.0)
         subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], ad_gmv_base)
         totals[scope] = subtotal
@@ -3362,6 +3377,267 @@ def write_promotion_comparison_sheet(
     ws.sheet_view.showGridLines = False
 
 
+def write_promotion_comparison_sheet_reference(
+    wb,
+    prev_wb,
+    stores: list[Store],
+    metrics: dict[str, dict[str, Any]],
+    totals: dict[str, Any],
+) -> None:
+    """Add the promotion comparison sheet using the locked reference layout."""
+    if PROMO_COMPARISON_SHEET in wb.sheetnames:
+        wb.remove(wb[PROMO_COMPARISON_SHEET])
+    insert_index = wb.sheetnames.index("上期") if "上期" in wb.sheetnames else len(wb.sheetnames)
+    ws = wb.create_sheet(PROMO_COMPARISON_SHEET, insert_index)
+    prev = previous_period_sheet(prev_wb)
+
+    fields = [
+        ("ad_spend", "推广消耗", "growth", "#,##0_ "),
+        ("ad_orig", "推广营业额", "growth", "#,##0_ "),
+        ("ad_orders", "推广订单数", "growth", "#,##0_ "),
+        ("ad_roi", "营业额ROI", "diff", "0.0"),
+        ("ad_activity", "活动", "diff", "0.0"),
+        ("exp_count", "总曝光次数", "growth", "#,##0_ "),
+        ("ad_share", "推广曝光占比", "diff", "0.0%"),
+        ("paid_exp", "推广曝光次数", "growth", "#,##0_ "),
+        ("natural_exp", "自然曝光次数", "growth", "#,##0_ "),
+    ]
+    period_width = len(fields)
+    current_label = export_label(START, END)
+    previous_label = export_label(PREV_START, PREV_END)
+
+    def metric_values(source: dict[str, Any] | None) -> dict[str, Any]:
+        source = source or {}
+        exp_count = scalar_num(source.get("exp_count", 0.0))
+        paid_exp = scalar_num(source.get("paid_exp", 0.0))
+        return {
+            "ad_spend": source.get("ad_spend"),
+            "ad_orig": source.get("ad_orig"),
+            "ad_orders": source.get("ad_orders"),
+            "ad_roi": source.get("ad_roi"),
+            "ad_activity": source.get("ad_activity"),
+            "exp_count": exp_count,
+            "ad_share": source.get("ad_share"),
+            "paid_exp": paid_exp,
+            "natural_exp": max(exp_count - paid_exp, 0.0),
+        }
+
+    def find_prev_promo_sheet():
+        for title in (PROMO_COMPARISON_SHEET, "双平台推广"):
+            if title in prev_wb.sheetnames:
+                return prev_wb[title]
+        return None
+
+    def previous_block_values(sheet, keyword: str) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+        title_row = None
+        for row in range(1, (sheet.max_row or 1) + 1):
+            if keyword in cell_text(sheet.cell(row, 1).value):
+                title_row = row
+                break
+
+        header_row = None
+        if title_row:
+            for row in range(title_row + 1, min(sheet.max_row or title_row + 1, title_row + 5) + 1):
+                if "推广消耗" in cell_text(sheet.cell(row, 2).value) and "推广营业额" in cell_text(sheet.cell(row, 3).value):
+                    header_row = row
+                    break
+        else:
+            header_rows = [
+                row
+                for row in range(1, (sheet.max_row or 1) + 1)
+                if "推广消耗" in cell_text(sheet.cell(row, 2).value)
+                and "推广营业额" in cell_text(sheet.cell(row, 3).value)
+            ]
+            if keyword == "美团" and header_rows:
+                header_row = header_rows[0]
+            elif keyword == "饿了么" and len(header_rows) > 1:
+                header_row = header_rows[1]
+        if not header_row:
+            return {}, {}
+
+        row_values: dict[str, dict[str, Any]] = {}
+        total_values: dict[str, Any] = {}
+        for row in range(header_row + 1, (sheet.max_row or header_row) + 1):
+            label = cell_text(sheet.cell(row, 1).value)
+            if not label:
+                continue
+            values = {key: get_prev(sheet, row, 2 + idx) for idx, (key, _label, _mode, _fmt) in enumerate(fields)}
+            if label == "总计":
+                total_values = values
+                break
+            row_values[norm_store_name(label)] = values
+        return row_values, total_values
+
+    comparison_sheet = find_prev_promo_sheet()
+    prev_comparison: dict[str, dict[str, dict[str, Any]]] = {"mt": {}, "ele": {}}
+    prev_comparison_totals: dict[str, dict[str, Any]] = {"mt": {}, "ele": {}}
+    if comparison_sheet is not None:
+        prev_comparison["mt"], prev_comparison_totals["mt"] = previous_block_values(comparison_sheet, "美团")
+        prev_comparison["ele"], prev_comparison_totals["ele"] = previous_block_values(comparison_sheet, "饿了么")
+
+    prev_promo_by_code, prev_promo_by_name = section_store_row_maps(prev, "推广数据", 43, 58, 2, 3)
+    prev_traffic_by_code, prev_traffic_by_name = section_store_row_maps(prev, "流量数据", 23, 38, 2, 3)
+    prev_promo_total_row = find_section_total_row(prev, "推广数据", 59)
+    prev_traffic_total_row = find_section_total_row(prev, "流量数据", 39)
+    prev_promo_header = section_header(prev, "推广数据")
+    prev_traffic_header = section_header(prev, "流量数据")
+    fallback_cols: dict[str, dict[str, int | None]] = {}
+    for scope, occurrence in {"mt": 2, "ele": 3}.items():
+        fallback_cols[scope] = {
+            "paid_exp": nth_header_col(prev, prev_promo_header, ["推广曝光次数", "曝光次数"], occurrence, exact=False),
+            "ad_share": nth_header_col(prev, prev_promo_header, ["推广曝光占比", "广告曝光占比"], occurrence, exact=False),
+            "ad_spend": nth_header_col(prev, prev_promo_header, ["消耗金额", "推广消耗"], occurrence, exact=False),
+            "ad_roi": nth_header_col(prev, prev_promo_header, ["营业额ROI", *PROMO_ROI_ALIASES], occurrence, exact=False),
+            "ad_orig": nth_header_col(prev, prev_promo_header, ["推广营业额", *PROMO_DEAL_AMOUNT_ALIASES], occurrence, exact=False),
+            "exp_count": nth_header_col(prev, prev_traffic_header, ["总曝光次数"], occurrence, exact=False),
+        }
+
+    def comparison_lookup(store: Store, scope: str) -> dict[str, Any] | None:
+        block = prev_comparison.get(scope, {})
+        keys = [norm_store_name(store.name), norm_store_name(store.name_full)]
+        for key in keys:
+            if key in block:
+                return block[key]
+        for key in keys:
+            if not key:
+                continue
+            for existing, values in block.items():
+                if existing and (key in existing or existing in key):
+                    return values
+        return None
+
+    def previous_values(store: Store | None, scope: str) -> dict[str, Any]:
+        if store is None:
+            if prev_comparison_totals.get(scope):
+                return prev_comparison_totals[scope]
+        else:
+            found = comparison_lookup(store, scope)
+            if found is not None:
+                return found
+
+        promo_row = prev_promo_total_row if store is None else matched_row_by_store(store, prev_promo_by_code, prev_promo_by_name)
+        traffic_row = prev_traffic_total_row if store is None else matched_row_by_store(store, prev_traffic_by_code, prev_traffic_by_name)
+        cols = fallback_cols.get(scope, {})
+        values = {
+            "ad_spend": get_prev(prev, promo_row, cols.get("ad_spend")) if promo_row and cols.get("ad_spend") else None,
+            "ad_orig": get_prev(prev, promo_row, cols.get("ad_orig")) if promo_row and cols.get("ad_orig") else None,
+            "ad_orders": None,
+            "ad_roi": get_prev(prev, promo_row, cols.get("ad_roi")) if promo_row and cols.get("ad_roi") else None,
+            "ad_activity": None,
+            "exp_count": get_prev(prev, traffic_row, cols.get("exp_count")) if traffic_row and cols.get("exp_count") else None,
+            "ad_share": get_prev(prev, promo_row, cols.get("ad_share")) if promo_row and cols.get("ad_share") else None,
+            "paid_exp": get_prev(prev, promo_row, cols.get("paid_exp")) if promo_row and cols.get("paid_exp") else None,
+        }
+        exp_count = scalar_num(values.get("exp_count", 0.0))
+        paid_exp = scalar_num(values.get("paid_exp", 0.0))
+        values["natural_exp"] = max(exp_count - paid_exp, 0.0) if values.get("exp_count") is not None else None
+        return values
+
+    thin = Side(style="thin", color="000000")
+    medium = Side(style="medium", color="000000")
+    yellow = PatternFill("solid", fgColor="FFFFC000")
+    blue = PatternFill("solid", fgColor="FF00B0F0")
+    default_font = Font(name="微软雅黑", size=11)
+    bold_font = Font(name="微软雅黑", size=11, bold=True)
+
+    widths = {
+        "A": 20.8181818181818,
+        "B": 9.72727272727273,
+        "C": 11.9090909090909,
+        "D": 13,
+        "E": 11.4545454545455,
+        "F": 5.81818181818182,
+        "G": 11.9090909090909,
+        "H": 14.0909090909091,
+        "I": 13,
+        "J": 13,
+    }
+    ws.column_dimensions["A"].width = widths["A"]
+    for offset in (0, 9, 18):
+        for idx in range(1, 10):
+            source_letter = get_column_letter(idx + 1)
+            target_letter = get_column_letter(idx + 1 + offset)
+            ws.column_dimensions[target_letter].width = widths[source_letter]
+
+    def set_cell(row: int, col: int, value: Any, number_format: str | None = None, bold: bool = False, fill: PatternFill | None = None) -> None:
+        cell = ws.cell(row, col)
+        write(cell, value)
+        if number_format:
+            cell.number_format = number_format
+        cell.font = copy(bold_font if bold else default_font)
+        if isinstance(value, (int, float)) and value < 0 and number_format and "%" in number_format:
+            cell.font = copy(cell.font)
+            cell.font = Font(name=cell.font.name, size=cell.font.sz, bold=cell.font.bold, color="FF0000")
+        if fill is not None:
+            cell.fill = copy(fill)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def apply_block_borders(start_row: int, data_start: int, total_row: int) -> None:
+        end_col = 1 + period_width * 3
+        for row in range(start_row, total_row + 1):
+            for col in range(1, end_col + 1):
+                left = medium if col in (1, 2, 11, 20) else thin
+                right = medium if col in (1, 10, 19, 28) else thin
+                top = medium if row in (start_row, data_start) else thin
+                bottom = medium if row == total_row else thin
+                ws.cell(row, col).border = Border(left=left, right=right, top=top, bottom=bottom)
+
+    def render_block(title_row: int, title: str, scope: str, fill: PatternFill) -> int:
+        header_row = title_row + 1
+        metric_row = title_row + 2
+        data_start = title_row + 3
+        total_row = data_start + len(stores)
+
+        ws.row_dimensions[title_row].height = 17.25
+        ws.row_dimensions[metric_row].height = 17.25
+        ws.row_dimensions[total_row].height = 17.25
+
+        set_cell(title_row, 1, title, bold=True)
+        ws.cell(title_row, 1).alignment = Alignment(vertical="center")
+
+        ws.merge_cells(start_row=header_row, start_column=1, end_row=metric_row, end_column=1)
+        ws.merge_cells(start_row=header_row, start_column=2, end_row=header_row, end_column=10)
+        ws.merge_cells(start_row=header_row, start_column=11, end_row=header_row, end_column=19)
+        ws.merge_cells(start_row=header_row, start_column=20, end_row=header_row, end_column=28)
+        set_cell(header_row, 1, "门店名称", bold=True, fill=fill)
+        set_cell(header_row, 2, current_label, bold=True, fill=fill)
+        set_cell(header_row, 11, previous_label, bold=True, fill=fill)
+        set_cell(header_row, 20, "环比", bold=True, fill=fill)
+        for start_col in (2, 11, 20):
+            for idx, (_key, label, _mode, _fmt) in enumerate(fields):
+                set_cell(metric_row, start_col + idx, label, bold=True, fill=fill)
+
+        for offset, store in enumerate(stores):
+            row = data_start + offset
+            set_cell(row, 1, store.name)
+            cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}))
+            prev_values = previous_values(store, scope)
+            for idx, (key, _label, mode, number_format) in enumerate(fields):
+                cur_value = cur_values.get(key)
+                prev_value = prev_values.get(key)
+                comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
+                set_cell(row, 2 + idx, cur_value, number_format)
+                set_cell(row, 11 + idx, prev_value, number_format)
+                set_cell(row, 20 + idx, comp_value, "0.0%" if mode == "growth" else number_format)
+
+        set_cell(total_row, 1, "总计", bold=True)
+        total_values = metric_values(totals.get(scope, {}))
+        prev_total_values = previous_values(None, scope)
+        for idx, (key, _label, mode, number_format) in enumerate(fields):
+            cur_value = total_values.get(key)
+            prev_value = prev_total_values.get(key)
+            comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
+            set_cell(total_row, 2 + idx, cur_value, number_format, bold=True)
+            set_cell(total_row, 11 + idx, prev_value, number_format, bold=True)
+            set_cell(total_row, 20 + idx, comp_value, "0.0%" if mode == "growth" else number_format, bold=True)
+
+        apply_block_borders(header_row, data_start, total_row)
+        return total_row
+
+    top_total = render_block(1, "美团：", "mt", yellow)
+    render_block(top_total + 2, "饿了么：", "ele", blue)
+
+
 def validate_output(path: Path, stores: list[Store], metrics, totals, new_packages, paid_audit) -> dict[str, Any]:
     validation: dict[str, Any] = {}
     with zipfile.ZipFile(path) as zf:
@@ -3444,7 +3720,7 @@ def main() -> None:
     copy_previous_week_to_previous_sheet(wb, prev_wb, prev_wb_format)
     ensure_report_store_rows(wb, stores)
     write_main_sheet(wb, prev_wb, stores, metrics, totals)
-    write_promotion_comparison_sheet(wb, prev_wb, stores, metrics, totals)
+    write_promotion_comparison_sheet_reference(wb, prev_wb, stores, metrics, totals)
     write_v2(wb, stores)
     write_distance_and_paid(wb, prev_wb, distance, paid, stores)
     write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg_qty, totals["biz_days"] or PERIOD_DAYS, new_packages)
