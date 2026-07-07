@@ -462,12 +462,13 @@ async function uploadFilesToSession() {
     return uploaded;
   };
   const queue = [...REQUIRED_FILES];
+  const totalUploads = REQUIRED_FILES.length;
   const workerCount = Math.min(3, queue.length);
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (queue.length) {
         const item = queue.shift();
-        await uploadFileToSession(uploadId, item, nextCompleted, REQUIRED_FILES.length);
+        await uploadFileToSession(uploadId, item, nextCompleted, totalUploads);
       }
     }),
   );
@@ -479,7 +480,8 @@ async function generateReport() {
     statusText.textContent = "周期缺失";
     return;
   }
-  if (filesByKey.size !== REQUIRED_FILES.length) {
+  const readyRequired = REQUIRED_FILES.filter((item) => filesByKey.has(item.key)).length;
+  if (readyRequired !== REQUIRED_FILES.length) {
     statusText.textContent = "源表缺失";
     return;
   }
@@ -534,7 +536,7 @@ async function generateReport() {
     }
   } finally {
     clearBtn.disabled = false;
-    generateBtn.disabled = filesByKey.size !== REQUIRED_FILES.length;
+    generateBtn.disabled = REQUIRED_FILES.filter((item) => filesByKey.has(item.key)).length !== REQUIRED_FILES.length;
   }
 }
 

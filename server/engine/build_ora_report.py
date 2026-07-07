@@ -489,6 +489,23 @@ def copy_row_style(ws, src_row: int, dst_row: int, max_col: int) -> None:
             dst.protection = copy(src.protection)
 
 
+def copy_cell_style(src, dst) -> None:
+    if src.has_style:
+        dst._style = copy(src._style)
+    if src.number_format:
+        dst.number_format = src.number_format
+    if src.font:
+        dst.font = copy(src.font)
+    if src.fill:
+        dst.fill = copy(src.fill)
+    if src.border:
+        dst.border = copy(src.border)
+    if src.alignment:
+        dst.alignment = copy(src.alignment)
+    if src.protection:
+        dst.protection = copy(src.protection)
+
+
 def copy_row_template(ws, src_row: int, dst_row: int, max_col: int) -> None:
     copy_row_style(ws, src_row, dst_row, max_col)
     for col in range(1, max_col + 1):
@@ -972,6 +989,18 @@ def refresh_period_labels(wb) -> None:
 
     def replace_text(text: str, sheet_title: str) -> str:
         updated = text
+        if "本期" in updated and "上期" in updated:
+            matches = list(range_pattern.finditer(updated))
+            if matches:
+                labels = [CURRENT_SHEET] + [PREVIOUS_SHEET] * (len(matches) - 1)
+                parts: list[str] = []
+                cursor = 0
+                for match, label in zip(matches, labels):
+                    parts.append(updated[cursor:match.start()])
+                    parts.append(label)
+                    cursor = match.end()
+                parts.append(updated[cursor:])
+                return "".join(parts)
         if "本期" in updated:
             return range_pattern.sub(CURRENT_SHEET, updated)
         if "上期" in updated:
@@ -2653,7 +2682,7 @@ def build_performance_email_text(wb) -> str:
             f"渠道表现：美团sales环比{email_pct_phrase(mt_sales_growth)}（{fmt_signed_int_with_hold(mt_sales_delta, '元')}），饿了么sales环比{email_pct_phrase(ele_sales_growth)}（{fmt_signed_int_with_hold(ele_sales_delta, '元')}）",
             f"2、折扣情况：整体折扣率为{fmt_level_pct(cur_total.get('discount_rate', 0.0))}（环比{fmt_signed_pct(discount_delta)}）",
             f"3、流量表现：店均日曝光人数{fmt_int_abs(cur_total.get('exp_people_daily', 0.0))}（环比{fmt_signed_pct(exp_daily_growth)}），进店转化率{fmt_level_pct(cur_total.get('entry_rate', 0.0))}（环比{fmt_signed_pct(entry_delta)}），下单转化率{fmt_level_pct(cur_total.get('order_rate', 0.0))}（环比{fmt_signed_pct(order_rate_delta)}）",
-            f"4、推广表现：消耗金额{fmt_int_abs(cur_total.get('ad_spend', 0.0))}元，进店数{fmt_int_abs(cur_total.get('ad_visits', 0.0))}人次，预估带来sales {fmt_int_abs(cur_total.get('ad_orig', 0.0))}元，平均ROI为{cur_total.get('ad_roi', 0.0):.1f}",
+            f"4、推广表现：消耗金额{fmt_int_abs(cur_total.get('ad_spend', 0.0))}元，进店数{fmt_int_abs(cur_total.get('ad_visits', 0.0))}人次，订单交易额{fmt_int_abs(cur_total.get('ad_orig', 0.0))}元，实付ROI为{cur_total.get('ad_roi', 0.0):.1f}",
             "5、服务指标",
             f"中差评：{fmt_int_abs(bad_total)}条",
         ]
@@ -3093,6 +3122,7 @@ def write_promotion_comparison_sheet(
         wb.remove(wb[PROMO_COMPARISON_SHEET])
     insert_index = wb.sheetnames.index("上期") if "上期" in wb.sheetnames else len(wb.sheetnames)
     ws = wb.create_sheet(PROMO_COMPARISON_SHEET, insert_index)
+    cur_ws = wb[CURRENT_SHEET]
     prev = previous_period_sheet(prev_wb)
 
     prev_promo_by_code, prev_promo_by_name = section_store_row_maps(prev, "推广数据", 43, 58, 2, 3)
@@ -3109,36 +3139,31 @@ def write_promotion_comparison_sheet(
             "ad_orig": nth_header_col(prev, prev_promo_header, PROMO_DEAL_AMOUNT_ALIASES, occurrence, exact=False),
             "ad_gmv_share": nth_header_col(prev, prev_promo_header, ["广告GMV占比"], occurrence, exact=False),
         }
+
+    cur_promo_title = find_section_title_row(cur_ws, "推广数据") or 41
+    cur_promo_header = section_header(cur_ws, "推广数据")
+    cur_promo_total = find_section_total_row(cur_ws, "推广数据", 59)
+    cur_store_template = cur_promo_header + 1
+    for row in range(cur_promo_header + 1, max(cur_promo_total, cur_promo_header + 2)):
+        if cell_text(cur_ws.cell(row, 2).value) not in {"", "店号", "总计"}:
+            cur_store_template = row
+            break
+
     fields = [
-        ("paid_exp", "推广曝光次数", "growth", "#,##0"),
-        ("ad_share", "广告曝光占比", "diff", "0.0%"),
-        ("ad_spend", "消耗金额", "growth", "#,##0"),
-        ("ad_visits", "进店数", "growth", "#,##0"),
-        ("ad_orig", "订单交易额", "growth", "#,##0"),
-        ("ad_roi", "实付ROI", "diff", "#,##0.0"),
-        ("ad_gmv_share", "广告GMV占比", "diff", "0.0%"),
+        ("paid_exp", "推广曝光次数", "growth", "#,##0", {"total": 4, "mt": 14, "ele": 24}),
+        ("ad_share", "广告曝光占比", "diff", "0.0%", {"total": 6, "mt": 16, "ele": 26}),
+        ("ad_spend", "消耗金额", "growth", "#,##0", {"total": 7, "mt": 17, "ele": 27}),
+        ("ad_visits", "进店数", "growth", "#,##0", {"total": 8, "mt": 18, "ele": 28}),
+        ("ad_orig", "订单交易额", "growth", "#,##0", {"total": 10, "mt": 20, "ele": 30}),
+        ("ad_roi", "实付ROI", "diff", "#,##0.0", {"total": 9, "mt": 19, "ele": 29}),
+        ("ad_gmv_share", "广告GMV占比", "diff", "0.0%", {"total": 11, "mt": 21, "ele": 31}),
     ]
-    headers = ["店号", "店名"]
-    for _, label, mode, _ in fields:
-        headers.extend([f"{label}_本期", f"{label}_上期", "环比" if mode == "growth" else "差值"])
-
-    title_fill = PatternFill("solid", fgColor="1F4E79")
-    header_fill = PatternFill("solid", fgColor="5B9BD5")
-    total_fill = PatternFill("solid", fgColor="FFF2CC")
-    white_font = Font(color="FFFFFF", bold=True)
-    bold_font = Font(bold=True)
-    thin = Side(style="thin", color="D9E2EC")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-    def style_range(row: int, fill: PatternFill | None = None, font: Font | None = None) -> None:
-        for col in range(1, len(headers) + 1):
-            cell = ws.cell(row, col)
-            cell.border = border
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            if fill:
-                cell.fill = fill
-            if font:
-                cell.font = copy(font)
+    scopes = [
+        ("total", "推广数据", 4),
+        ("mt", "美团推广数据", 27),
+        ("ele", "饿了么推广数据", 50),
+    ]
+    group_width = len(fields) * 3
 
     def previous_values(store: Store | None, scope: str) -> dict[str, Any]:
         row = prev_total_row if store is None else matched_row_by_store(store, prev_promo_by_code, prev_promo_by_name)
@@ -3146,65 +3171,92 @@ def write_promotion_comparison_sheet(
             return {}
         return {key: get_prev(prev, row, col) if col else 0.0 for key, col in promo_prev_cols[scope].items()}
 
-    def write_block(start_row: int, title: str, scope: str) -> int:
-        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=len(headers))
-        title_cell = ws.cell(start_row, 1)
-        title_cell.value = title
-        title_cell.fill = title_fill
-        title_cell.font = white_font
+    def set_from_template(dst_row: int, dst_col: int, src_row: int, src_col: int, value: Any, number_format: str | None = None) -> None:
+        cell = ws.cell(dst_row, dst_col)
+        copy_cell_style(cur_ws.cell(src_row, src_col), cell)
+        write(cell, value)
+        if number_format:
+            cell.number_format = number_format
+        cell.alignment = copy(cell.alignment)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    ws.sheet_view.showGridLines = False
+    ws.row_dimensions[1].height = cur_ws.row_dimensions[cur_promo_title].height
+    ws.row_dimensions[2].height = cur_ws.row_dimensions[cur_promo_header].height
+    ws.column_dimensions["A"].width = 3
+    for col in (2, 3):
+        letter = get_column_letter(col)
+        ws.column_dimensions[letter].width = cur_ws.column_dimensions[letter].width or (12 if col == 2 else 18)
+
+    set_from_template(2, 2, cur_promo_header, 2, "店号")
+    set_from_template(2, 3, cur_promo_header, 3, "店名")
+    for key, scope_label, start_col in scopes:
+        end_col = start_col + group_width - 1
+        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+        title_cell = ws.cell(1, start_col)
+        copy_cell_style(cur_ws.cell(cur_promo_title, 3), title_cell)
+        title_cell.value = f"{scope_label}（本期 {CURRENT_SHEET} vs 上期 {PREVIOUS_SHEET}）"
         title_cell.alignment = Alignment(horizontal="center", vertical="center")
+        col = start_col
+        for field_key, label, mode, number_format, source_cols in fields:
+            source_col = source_cols[key]
+            metric_label = f"{scope_label}{label}" if field_key == "paid_exp" and key != "total" else label
+            for header in (metric_label, "上期", "环比" if mode == "growth" else "差值"):
+                set_from_template(2, col, cur_promo_header, source_col, header)
+                ws.column_dimensions[get_column_letter(col)].width = cur_ws.column_dimensions[get_column_letter(source_col)].width or 12
+                col += 1
 
-        header_row = start_row + 1
-        for col, header in enumerate(headers, start=1):
-            cell = ws.cell(header_row, col)
-            cell.value = header
-        style_range(header_row, header_fill, white_font)
-
-        row = header_row + 1
-        for store in stores:
-            cur = metrics[store.code][scope]
+    data_start = 3
+    for offset, store in enumerate(stores):
+        row = data_start + offset
+        ws.row_dimensions[row].height = cur_ws.row_dimensions[cur_store_template].height
+        set_from_template(row, 2, cur_store_template, 2, store.code)
+        set_from_template(row, 3, cur_store_template, 3, store.name)
+        for scope, _scope_label, start_col in scopes:
+            cur = metrics.get(store.code, {}).get(scope, {})
             prev_values = previous_values(store, scope)
-            ws.cell(row, 1).value = store.code
-            ws.cell(row, 2).value = store.name
-            col = 3
-            for key, _, mode, number_format in fields:
+            col = start_col
+            for key, _label, mode, number_format, source_cols in fields:
+                source_col = source_cols[scope]
                 cur_value = cur.get(key)
                 prev_value = prev_values.get(key)
                 comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
-                for value, fmt in [(cur_value, number_format), (prev_value, number_format), (comp_value, "0.0%" if mode == "growth" else number_format)]:
-                    write(ws.cell(row, col), value)
-                    ws.cell(row, col).number_format = fmt
+                values = [
+                    (cur_value, number_format),
+                    (prev_value, number_format),
+                    (comp_value, "0.0%" if mode == "growth" else number_format),
+                ]
+                for value, fmt in values:
+                    set_from_template(row, col, cur_store_template, source_col, value, fmt)
                     col += 1
-            style_range(row)
-            row += 1
 
+    total_row = data_start + len(stores)
+    ws.row_dimensions[total_row].height = cur_ws.row_dimensions[cur_promo_total].height
+    set_from_template(total_row, 2, cur_promo_total, 2, "")
+    set_from_template(total_row, 3, cur_promo_total, 3, "总计")
+    for scope, _scope_label, start_col in scopes:
         total = totals[scope]
         prev_total_values = previous_values(None, scope)
-        ws.cell(row, 1).value = "总计"
-        ws.cell(row, 2).value = ""
-        col = 3
-        for key, _, mode, number_format in fields:
+        col = start_col
+        for key, _label, mode, number_format, source_cols in fields:
+            source_col = source_cols[scope]
             cur_value = total.get(key)
             prev_value = prev_total_values.get(key)
             comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
-            for value, fmt in [(cur_value, number_format), (prev_value, number_format), (comp_value, "0.0%" if mode == "growth" else number_format)]:
-                write(ws.cell(row, col), value)
-                ws.cell(row, col).number_format = fmt
+            values = [
+                (cur_value, number_format),
+                (prev_value, number_format),
+                (comp_value, "0.0%" if mode == "growth" else number_format),
+            ]
+            for value, fmt in values:
+                set_from_template(total_row, col, cur_promo_total, source_col, value, fmt)
                 col += 1
-        style_range(row, total_fill, bold_font)
-        return row + 2
-
-    next_row = 1
-    next_row = write_block(next_row, f"总推广数据（本期 {CURRENT_SHEET} vs 上期 {PREVIOUS_SHEET}）", "total")
-    next_row = write_block(next_row, f"美团推广数据（本期 {CURRENT_SHEET} vs 上期 {PREVIOUS_SHEET}）", "mt")
-    write_block(next_row, f"饿了么推广数据（本期 {CURRENT_SHEET} vs 上期 {PREVIOUS_SHEET}）", "ele")
-
-    ws.freeze_panes = "A3"
+    for cell in ws[total_row]:
+        font = copy(cell.font)
+        font.bold = True
+        cell.font = font
+    ws.freeze_panes = "D3"
     ws.sheet_view.showGridLines = False
-    ws.column_dimensions["A"].width = 12
-    ws.column_dimensions["B"].width = 18
-    for col in range(3, len(headers) + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 15
 
 
 def validate_output(path: Path, stores: list[Store], metrics, totals, new_packages, paid_audit) -> dict[str, Any]:
