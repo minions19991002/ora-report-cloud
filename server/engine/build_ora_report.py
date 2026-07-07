@@ -135,22 +135,105 @@ def read_excel_columns(name: str, columns: dict[str, list[str]], sheet_name: str
             raise KeyError(f"{name} 缺少必要表头：{missing}")
 
         rows: list[dict[str, Any]] = []
-        for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        min_idx = min(selected.values())
+        max_idx = max(selected.values())
+        empty_tail = 0
+        for row in ws.iter_rows(min_row=header_row + 1, min_col=min_idx + 1, max_col=max_idx + 1, values_only=True):
             record: dict[str, Any] = {}
             non_empty = False
             for target, idx in selected.items():
-                value = row[idx] if idx < len(row) else None
+                local_idx = idx - min_idx
+                value = row[local_idx] if local_idx < len(row) else None
                 record[target] = value
                 if value not in (None, ""):
                     non_empty = True
             if non_empty:
+                empty_tail = 0
                 rows.append(record)
+            else:
+                empty_tail += 1
+                if empty_tail >= 2000:
+                    break
     finally:
         wb.close()
 
     result = pd.DataFrame(rows, columns=list(columns))
     _EXCEL_CACHE[key] = result
     return result.copy()
+
+
+@dataclass(frozen=True)
+class CachedCell:
+    value: Any = None
+
+
+class CachedWorksheet:
+    def __init__(self, worksheet) -> None:
+        self.title = worksheet.title
+        values: list[tuple[Any, ...]] = []
+        last_row = 0
+        last_col = 0
+        for row_idx, row in enumerate(worksheet.iter_rows(values_only=True), start=1):
+            row_values = tuple(row)
+            values.append(row_values)
+            for col_idx, value in enumerate(row_values, start=1):
+                if value not in (None, ""):
+                    last_row = row_idx
+                    last_col = max(last_col, col_idx)
+        self._values = [tuple(row[:last_col]) for row in values[:last_row]] if last_row else []
+        self.max_row = max(len(self._values), 1)
+        self.max_column = max(last_col, 1)
+
+    def cell(self, row: int, column: int) -> CachedCell:
+        row_idx = row - 1
+        col_idx = column - 1
+        if 0 <= row_idx < len(self._values):
+            row_values = self._values[row_idx]
+            if 0 <= col_idx < len(row_values):
+                return CachedCell(row_values[col_idx])
+        return CachedCell()
+
+    def iter_rows(
+        self,
+        min_row: int | None = None,
+        max_row: int | None = None,
+        min_col: int | None = None,
+        max_col: int | None = None,
+        values_only: bool = False,
+    ):
+        start_row = min_row or 1
+        end_row = max_row or self.max_row
+        start_col = min_col or 1
+        end_col = max_col or self.max_column
+        for row_idx in range(start_row, end_row + 1):
+            cells = [self.cell(row_idx, col_idx) for col_idx in range(start_col, end_col + 1)]
+            if values_only:
+                yield tuple(cell.value for cell in cells)
+            else:
+                yield tuple(cells)
+
+
+class CachedWorkbook:
+    def __init__(self, workbook) -> None:
+        self._workbook = workbook
+        self.sheetnames = list(workbook.sheetnames)
+        self._states = {ws.title: getattr(ws, "sheet_state", "visible") for ws in workbook.worksheets}
+        self._cache: dict[str, CachedWorksheet] = {}
+
+    def __getitem__(self, sheet_name: str) -> CachedWorksheet:
+        if sheet_name not in self._cache:
+            self._cache[sheet_name] = CachedWorksheet(self._workbook[sheet_name])
+        return self._cache[sheet_name]
+
+    @property
+    def worksheets(self) -> list[CachedWorksheet]:
+        return [self[name] for name in self.sheetnames]
+
+    def sheet_state_for(self, sheet_name: str) -> str:
+        return self._states.get(sheet_name, "visible")
+
+    def close(self) -> None:
+        self._workbook.close()
 
 
 def norm_id(value: Any) -> str:
@@ -183,9 +266,11 @@ def parse_date_series(series: pd.Series) -> pd.Series:
 
 
 def period_rows(df: pd.DataFrame, date_col: str, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    out = df.copy()
-    out["_date"] = parse_date_series(out[date_col])
-    return out[(out["_date"] >= start) & (out["_date"] <= end)].copy()
+    dates = parse_date_series(df[date_col])
+    mask = (dates >= start) & (dates <= end)
+    out = df.loc[mask].copy()
+    out["_date"] = dates.loc[mask].to_numpy()
+    return out
 
 
 def current_rows(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
@@ -779,6 +864,14 @@ def sum_existing_columns(df: pd.DataFrame, cols: list[str]) -> pd.Series:
 PROMO_SALES_ALIASES = ["订单交易额(元)", "订单交易额", "订单原价交易额(元)", "订单原价交易额", "推广营业额"]
 PROMO_ROI_ALIASES = ["实付ROI", "营业额ROI"]
 PROMO_DEAL_AMOUNT_ALIASES = ["订单交易额", "订单原价交易额", "推广营业额"]
+ORA_DAILY_VALUE_COLUMNS = {
+    "store_id": ["store_id", "店号", "门店ID", "门店编号"],
+    "sales_channel": ["sales_channel", "销售渠道", "渠道", "平台"],
+    "gross_amount": ["gross_amount", "销售额", "总sales", "营业额"],
+    "order_count": ["order_count", "订单数", "有效订单", "ADT"],
+    "discount_amount": ["discount_amount", "优惠金额", "商户折扣金额", "折扣金额"],
+}
+ORA_DAILY_COLUMNS = {"date_id": ["date_id", "日期"], **ORA_DAILY_VALUE_COLUMNS}
 
 
 def normalize_numeric_column(df: pd.DataFrame, target: str, aliases: list[str], source_name: str) -> pd.DataFrame:
@@ -824,23 +917,20 @@ def ora_store_lookup_maps(
     return code_map, name_map
 
 
+def load_ora_daily_table() -> pd.DataFrame:
+    return read_excel_columns("Ora外送日报.xlsx", ORA_DAILY_COLUMNS)
+
+
 def compute_ora_daily_operating(
     stores: list[Store],
     mt_to_code: dict[str, str],
     ele_to_code: dict[str, str],
 ) -> dict[str, dict[str, dict[str, float]]]:
-    columns = {
-        "store_id": ["store_id", "店号", "门店ID", "门店编号"],
-        "sales_channel": ["sales_channel", "销售渠道", "渠道", "平台"],
-        "gross_amount": ["gross_amount", "销售额", "总sales", "营业额"],
-        "order_count": ["order_count", "订单数", "有效订单", "ADT"],
-        "discount_amount": ["discount_amount", "优惠金额", "商户折扣金额", "折扣金额"],
-    }
     try:
-        df = read_excel_columns("Ora外送日报.xlsx", {"date_id": ["date_id", "日期"], **columns})
+        df = load_ora_daily_table()
         df = period_rows(df, "date_id", START, END)
     except KeyError:
-        df = read_excel_columns("Ora外送日报.xlsx", columns)
+        df = read_excel_columns("Ora外送日报.xlsx", ORA_DAILY_VALUE_COLUMNS)
     code_map, name_map = ora_store_lookup_maps(stores, mt_to_code, ele_to_code)
 
     result: dict[str, dict[str, dict[str, float]]] = defaultdict(
@@ -869,14 +959,8 @@ def compute_ora_first_order_dates(
     mt_to_code: dict[str, str],
     ele_to_code: dict[str, str],
 ) -> dict[str, date]:
-    columns = {
-        "date_id": ["date_id", "日期"],
-        "store_id": ["store_id", "店号", "门店ID", "门店编号"],
-        "sales_channel": ["sales_channel", "销售渠道", "渠道", "平台"],
-        "order_count": ["order_count", "订单数", "有效订单", "ADT"],
-    }
     try:
-        df = read_excel_columns("Ora外送日报.xlsx", columns)
+        df = load_ora_daily_table()
     except KeyError:
         return {}
     df = period_rows(df, "date_id", START, END)
@@ -915,7 +999,7 @@ def ensure_current_sheet(wb) -> None:
         visible[1].title = CURRENT_SHEET
 
 
-def previous_period_sheet(prev_wb):
+def _legacy_previous_period_sheet(prev_wb):
     if PREVIOUS_SHEET in prev_wb.sheetnames:
         return prev_wb[PREVIOUS_SHEET]
     excluded = {"V2", "上期"}
@@ -929,6 +1013,25 @@ def previous_period_sheet(prev_wb):
             return ws
     if visible:
         return visible[0]
+    return prev_wb[prev_wb.sheetnames[0]]
+
+
+def previous_period_sheet(prev_wb):
+    if PREVIOUS_SHEET in prev_wb.sheetnames:
+        return prev_wb[PREVIOUS_SHEET]
+    excluded = {"V2", "涓婃湡"}
+    state_for = getattr(prev_wb, "sheet_state_for", None)
+    visible_names = [
+        name
+        for name in prev_wb.sheetnames
+        if (state_for(name) if state_for else getattr(prev_wb[name], "sheet_state", "visible")) == "visible"
+        and name not in excluded
+    ]
+    for name in visible_names:
+        if re.search(r"\d{1,2}\.\d{1,2}\s*[-~]\s*\d{1,2}\.\d{1,2}", name):
+            return prev_wb[name]
+    if visible_names:
+        return prev_wb[visible_names[0]]
     return prev_wb[prev_wb.sheetnames[0]]
 
 
@@ -3269,7 +3372,6 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
         validation["worksheet_xml_unique"] = len(sheets) == len(set(sheets))
 
     wb_formula = load_workbook(path, data_only=False)
-    wb_values = load_workbook(path, data_only=True)
     validation["visible_sheets"] = [ws.title for ws in wb_formula.worksheets if ws.sheet_state == "visible"]
     validation["promotion_comparison_before_previous"] = (
         PROMO_COMPARISON_SHEET in wb_formula.sheetnames
@@ -3308,20 +3410,19 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
     current_total_row = find_section_total_row(cur_ws, "营业数据", 19)
     promo_total_row = find_section_total_row(cur_ws, "推广数据", 59)
     validation["key_cells"] = {
-        "current_total_sales": wb_values[CURRENT_SHEET][f"E{current_total_row}"].value,
-        "current_total_orders": wb_values[CURRENT_SHEET][f"J{current_total_row}"].value,
-        "current_mt_ad_spend": wb_values[CURRENT_SHEET][f"Q{promo_total_row}"].value,
-        "current_ele_ad_spend": wb_values[CURRENT_SHEET][f"AA{promo_total_row}"].value,
-        "single_top_product": wb_values["商品销售排行-单品"]["C2"].value,
-        "package_total_qty": wb_values["商品销售排行-套餐"]["C" + str(2 + 7 + len(new_packages))].value,
-        "complaint_total": wb_values["用户体验-客诉"]["D17"].value,
-        "delivery_mt_first": wb_values["用户体验-配送"]["H3"].value,
-        "delivery_ele_first": wb_values["用户体验-配送"]["O3"].value,
+        "current_total_sales": wb_formula[CURRENT_SHEET][f"E{current_total_row}"].value,
+        "current_total_orders": wb_formula[CURRENT_SHEET][f"J{current_total_row}"].value,
+        "current_mt_ad_spend": wb_formula[CURRENT_SHEET][f"Q{promo_total_row}"].value,
+        "current_ele_ad_spend": wb_formula[CURRENT_SHEET][f"AA{promo_total_row}"].value,
+        "single_top_product": wb_formula["商品销售排行-单品"]["C2"].value,
+        "package_total_qty": wb_formula["商品销售排行-套餐"]["C" + str(2 + 7 + len(new_packages))].value,
+        "complaint_total": wb_formula["用户体验-客诉"]["D17"].value,
+        "delivery_mt_first": wb_formula["用户体验-配送"]["H3"].value,
+        "delivery_ele_first": wb_formula["用户体验-配送"]["O3"].value,
     }
     validation["new_packages"] = new_packages
     validation["paid_audit"] = paid_audit
     wb_formula.close()
-    wb_values.close()
     return validation
 
 
@@ -3332,7 +3433,7 @@ def main() -> None:
     distance = compute_distance(mt_to_code, ele_to_code)
     paid, paid_audit = compute_paid_intervals(mt_to_code, ele_to_code, stores)
 
-    prev_wb = load_workbook(PREVIOUS, data_only=True, read_only=True)
+    prev_wb = CachedWorkbook(load_workbook(PREVIOUS, data_only=True, read_only=True))
     prev_wb_format = load_workbook(PREVIOUS, data_only=False, read_only=True)
     single_rows, pkg_rows, prev_single_qty, prev_pkg_qty, new_packages = compute_products(prev_wb, totals["biz_days"] or PERIOD_DAYS)
     complaints, complaint_top = compute_complaints()

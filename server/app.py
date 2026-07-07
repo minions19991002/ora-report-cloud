@@ -56,6 +56,7 @@ ENV_KEYS = [
 ]
 
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 GENERATE_LOCK = threading.Lock()
 JOB_LOCK = threading.Lock()
 JOB_ROOT = Path(tempfile.gettempdir()) / "ora-report-cloud-jobs"
@@ -125,7 +126,7 @@ async def save_upload(upload: UploadFile, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("wb") as handle:
         while True:
-            chunk = await upload.read(1024 * 1024)
+            chunk = await upload.read(UPLOAD_CHUNK_SIZE)
             if not chunk:
                 break
             handle.write(chunk)

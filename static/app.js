@@ -463,7 +463,7 @@ async function uploadFilesToSession() {
   };
   const queue = [...REQUIRED_FILES];
   const totalUploads = REQUIRED_FILES.length;
-  const workerCount = Math.min(3, queue.length);
+  const workerCount = Math.min(5, queue.length);
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (queue.length) {
