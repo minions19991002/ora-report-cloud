@@ -18,7 +18,7 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.formula.translate import Translator
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -56,6 +56,7 @@ def export_label(start: pd.Timestamp, end: pd.Timestamp) -> str:
 
 CURRENT_SHEET = os.environ.get("ORA_CURRENT_SHEET", sheet_label(START, END))
 PREVIOUS_SHEET = os.environ.get("ORA_PREVIOUS_SHEET", sheet_label(PREV_START, PREV_END))
+PROMO_COMPARISON_SHEET = "推广数据对比"
 PERIOD_DAYS = int((END - START).days) + 1
 TEMPLATE_CURRENT_LABELS = ("6.15-6.21",)
 TEMPLATE_PREVIOUS_LABELS = ("6.8-6.14",)
@@ -750,7 +751,9 @@ def sum_by_store(df: pd.DataFrame, store_col: str, cols: list[str]) -> dict[str,
     return result
 
 
-PROMO_SALES_ALIASES = ["订单交易额(元)", "订单交易额", "推广营业额"]
+PROMO_SALES_ALIASES = ["订单交易额(元)", "订单交易额", "订单原价交易额(元)", "订单原价交易额", "推广营业额"]
+PROMO_ROI_ALIASES = ["实付ROI", "营业额ROI"]
+PROMO_DEAL_AMOUNT_ALIASES = ["订单交易额", "订单原价交易额", "推广营业额"]
 
 
 def normalize_numeric_column(df: pd.DataFrame, target: str, aliases: list[str], source_name: str) -> pd.DataFrame:
@@ -983,6 +986,25 @@ def refresh_period_labels(wb) -> None:
                     refreshed = replace_text(value, ws.title)
                     if refreshed != value:
                         cell.value = refreshed
+
+
+def normalize_generated_metric_labels(wb) -> None:
+    """Keep output labels aligned while accepting older source/template headers."""
+    replacements = {
+        "订单原价交易额": "订单交易额",
+        "营业额ROI": "实付ROI",
+    }
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                value = cell.value
+                if not isinstance(value, str) or value.startswith("="):
+                    continue
+                updated = value
+                for old, new in replacements.items():
+                    updated = updated.replace(old, new)
+                if updated != value:
+                    cell.value = updated
 
 
 def apply_total_row_bold(wb) -> None:
@@ -2150,8 +2172,8 @@ def resolve_analysis_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]
             "paid_exp": nth_header_col(sheet, promo_header, ["曝光次数"], occurrence, exact=False),
             "ad_spend": nth_header_col(sheet, promo_header, ["消耗金额"], occurrence, exact=False),
             "ad_visits": nth_header_col(sheet, promo_header, ["进店数"], occurrence, exact=False),
-            "ad_roi": nth_header_col(sheet, promo_header, ["营业额ROI"], occurrence, exact=False),
-            "ad_orig": nth_header_col(sheet, promo_header, ["推广营业额", "订单交易额", "订单原价交易额"], occurrence, exact=False),
+            "ad_roi": nth_header_col(sheet, promo_header, PROMO_ROI_ALIASES, occurrence, exact=False),
+            "ad_orig": nth_header_col(sheet, promo_header, PROMO_DEAL_AMOUNT_ALIASES, occurrence, exact=False),
         }
 
     schema["门店评分"]["total"] = {
@@ -3040,6 +3062,132 @@ def copy_previous_week_to_previous_sheet(wb, prev_wb, prev_wb_format) -> None:
     ws.freeze_panes = layout["freeze"]
 
 
+def write_promotion_comparison_sheet(
+    wb,
+    prev_wb,
+    stores: list[Store],
+    metrics: dict[str, dict[str, Any]],
+    totals: dict[str, Any],
+) -> None:
+    """Add a visible promotion comparison sheet before the previous-period sheet."""
+    if PROMO_COMPARISON_SHEET in wb.sheetnames:
+        wb.remove(wb[PROMO_COMPARISON_SHEET])
+    insert_index = wb.sheetnames.index("上期") if "上期" in wb.sheetnames else len(wb.sheetnames)
+    ws = wb.create_sheet(PROMO_COMPARISON_SHEET, insert_index)
+    prev = previous_period_sheet(prev_wb)
+
+    prev_promo_by_code, prev_promo_by_name = section_store_row_maps(prev, "推广数据", 43, 58, 2, 3)
+    prev_total_row = find_section_total_row(prev, "推广数据", 59)
+    prev_promo_header = section_header(prev, "推广数据")
+    promo_prev_cols: dict[str, dict[str, int | None]] = {}
+    for scope, occurrence in {"total": 1, "mt": 2, "ele": 3}.items():
+        promo_prev_cols[scope] = {
+            "paid_exp": nth_header_col(prev, prev_promo_header, ["曝光次数"], occurrence, exact=False),
+            "ad_share": nth_header_col(prev, prev_promo_header, ["广告曝光占比"], occurrence, exact=False),
+            "ad_spend": nth_header_col(prev, prev_promo_header, ["消耗金额"], occurrence, exact=False),
+            "ad_visits": nth_header_col(prev, prev_promo_header, ["进店数"], occurrence, exact=False),
+            "ad_roi": nth_header_col(prev, prev_promo_header, PROMO_ROI_ALIASES, occurrence, exact=False),
+            "ad_orig": nth_header_col(prev, prev_promo_header, PROMO_DEAL_AMOUNT_ALIASES, occurrence, exact=False),
+            "ad_gmv_share": nth_header_col(prev, prev_promo_header, ["广告GMV占比"], occurrence, exact=False),
+        }
+    fields = [
+        ("paid_exp", "推广曝光次数", "growth", "#,##0"),
+        ("ad_share", "广告曝光占比", "diff", "0.0%"),
+        ("ad_spend", "消耗金额", "growth", "#,##0"),
+        ("ad_visits", "进店数", "growth", "#,##0"),
+        ("ad_orig", "订单交易额", "growth", "#,##0"),
+        ("ad_roi", "实付ROI", "diff", "#,##0.0"),
+        ("ad_gmv_share", "广告GMV占比", "diff", "0.0%"),
+    ]
+    headers = ["店号", "店名"]
+    for _, label, mode, _ in fields:
+        headers.extend([f"{label}_本期", f"{label}_上期", "环比" if mode == "growth" else "差值"])
+
+    title_fill = PatternFill("solid", fgColor="1F4E79")
+    header_fill = PatternFill("solid", fgColor="5B9BD5")
+    total_fill = PatternFill("solid", fgColor="FFF2CC")
+    white_font = Font(color="FFFFFF", bold=True)
+    bold_font = Font(bold=True)
+    thin = Side(style="thin", color="D9E2EC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def style_range(row: int, fill: PatternFill | None = None, font: Font | None = None) -> None:
+        for col in range(1, len(headers) + 1):
+            cell = ws.cell(row, col)
+            cell.border = border
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            if fill:
+                cell.fill = fill
+            if font:
+                cell.font = copy(font)
+
+    def previous_values(store: Store | None, scope: str) -> dict[str, Any]:
+        row = prev_total_row if store is None else matched_row_by_store(store, prev_promo_by_code, prev_promo_by_name)
+        if not row:
+            return {}
+        return {key: get_prev(prev, row, col) if col else 0.0 for key, col in promo_prev_cols[scope].items()}
+
+    def write_block(start_row: int, title: str, scope: str) -> int:
+        ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=len(headers))
+        title_cell = ws.cell(start_row, 1)
+        title_cell.value = title
+        title_cell.fill = title_fill
+        title_cell.font = white_font
+        title_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        header_row = start_row + 1
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(header_row, col)
+            cell.value = header
+        style_range(header_row, header_fill, white_font)
+
+        row = header_row + 1
+        for store in stores:
+            cur = metrics[store.code][scope]
+            prev_values = previous_values(store, scope)
+            ws.cell(row, 1).value = store.code
+            ws.cell(row, 2).value = store.name
+            col = 3
+            for key, _, mode, number_format in fields:
+                cur_value = cur.get(key)
+                prev_value = prev_values.get(key)
+                comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
+                for value, fmt in [(cur_value, number_format), (prev_value, number_format), (comp_value, "0.0%" if mode == "growth" else number_format)]:
+                    write(ws.cell(row, col), value)
+                    ws.cell(row, col).number_format = fmt
+                    col += 1
+            style_range(row)
+            row += 1
+
+        total = totals[scope]
+        prev_total_values = previous_values(None, scope)
+        ws.cell(row, 1).value = "总计"
+        ws.cell(row, 2).value = ""
+        col = 3
+        for key, _, mode, number_format in fields:
+            cur_value = total.get(key)
+            prev_value = prev_total_values.get(key)
+            comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
+            for value, fmt in [(cur_value, number_format), (prev_value, number_format), (comp_value, "0.0%" if mode == "growth" else number_format)]:
+                write(ws.cell(row, col), value)
+                ws.cell(row, col).number_format = fmt
+                col += 1
+        style_range(row, total_fill, bold_font)
+        return row + 2
+
+    next_row = 1
+    next_row = write_block(next_row, f"总推广数据（本期 {CURRENT_SHEET} vs 上期 {PREVIOUS_SHEET}）", "total")
+    next_row = write_block(next_row, f"美团推广数据（本期 {CURRENT_SHEET} vs 上期 {PREVIOUS_SHEET}）", "mt")
+    write_block(next_row, f"饿了么推广数据（本期 {CURRENT_SHEET} vs 上期 {PREVIOUS_SHEET}）", "ele")
+
+    ws.freeze_panes = "A3"
+    ws.sheet_view.showGridLines = False
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 18
+    for col in range(3, len(headers) + 1):
+        ws.column_dimensions[get_column_letter(col)].width = 15
+
+
 def validate_output(path: Path, stores: list[Store], metrics, totals, new_packages, paid_audit) -> dict[str, Any]:
     validation: dict[str, Any] = {}
     with zipfile.ZipFile(path) as zf:
@@ -3052,6 +3200,11 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
     wb_formula = load_workbook(path, data_only=False)
     wb_values = load_workbook(path, data_only=True)
     validation["visible_sheets"] = [ws.title for ws in wb_formula.worksheets if ws.sheet_state == "visible"]
+    validation["promotion_comparison_before_previous"] = (
+        PROMO_COMPARISON_SHEET in wb_formula.sheetnames
+        and "上期" in wb_formula.sheetnames
+        and wb_formula.sheetnames.index(PROMO_COMPARISON_SHEET) < wb_formula.sheetnames.index("上期")
+    )
     v2_refs = []
     for row in range(1, (wb_formula["V2"].max_row or 1) + 1):
         value = wb_formula["V2"].cell(row, 3).value
@@ -3119,6 +3272,7 @@ def main() -> None:
     copy_previous_week_to_previous_sheet(wb, prev_wb, prev_wb_format)
     ensure_report_store_rows(wb, stores)
     write_main_sheet(wb, prev_wb, stores, metrics, totals)
+    write_promotion_comparison_sheet(wb, prev_wb, stores, metrics, totals)
     write_v2(wb, stores)
     write_distance_and_paid(wb, prev_wb, distance, paid, stores)
     write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg_qty, totals["biz_days"] or PERIOD_DAYS, new_packages)
@@ -3127,6 +3281,7 @@ def main() -> None:
     write_business_analysis(wb)
     write_email_content_sheet(wb)
     refresh_period_labels(wb)
+    normalize_generated_metric_labels(wb)
     apply_total_row_bold(wb)
     apply_negative_growth_red(wb)
 
