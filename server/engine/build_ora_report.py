@@ -751,6 +751,14 @@ def sum_by_store(df: pd.DataFrame, store_col: str, cols: list[str]) -> dict[str,
     return result
 
 
+def sum_existing_columns(df: pd.DataFrame, cols: list[str]) -> pd.Series:
+    total = pd.Series(0.0, index=df.index)
+    for col in cols:
+        if col in df.columns:
+            total = total + to_num(df[col])
+    return total
+
+
 PROMO_SALES_ALIASES = ["订单交易额(元)", "订单交易额", "订单原价交易额(元)", "订单原价交易额", "推广营业额"]
 PROMO_ROI_ALIASES = ["实付ROI", "营业额ROI"]
 PROMO_DEAL_AMOUNT_ALIASES = ["订单交易额", "订单原价交易额", "推广营业额"]
@@ -1101,16 +1109,20 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     ele_store["_sales"] = to_num(ele_store["收入"]) + to_num(ele_store["平台技术服务费"]) + to_num(ele_store["履约技术服务费"])
     mt_paid_exp_from_store = "曝光提升数(次)" in mt_store.columns
     ele_paid_exp_from_store = "曝光提升数" in ele_store.columns
+    mt_has_ad_gmv_base = all(col in mt_store.columns for col in ["顾客实付", "平台活动补贴"])
+    ele_has_ad_gmv_base = all(col in ele_store.columns for col in ["顾客实付总额", "饿了么补贴", "代理商补贴"])
+    mt_store["_ad_gmv_base"] = sum_existing_columns(mt_store, ["顾客实付", "平台活动补贴"])
+    ele_store["_ad_gmv_base"] = sum_existing_columns(ele_store, ["顾客实付总额", "饿了么补贴", "代理商补贴"])
 
     mt_ag = sum_by_store(
         mt_store,
         "code",
-        ["_sales", "商家活动支出", "有效订单", "曝光人数", "入店人数", "下单人数", "曝光次数", "曝光提升数(次)", "优惠前总额"],
+        ["_sales", "_ad_gmv_base", "商家活动支出", "有效订单", "曝光人数", "入店人数", "下单人数", "曝光次数", "曝光提升数(次)", "优惠前总额"],
     )
     ele_ag = sum_by_store(
         ele_store,
         "code",
-        ["_sales", "商家活动成本（含满减活动）", "有效订单", "曝光人数", "进店人数", "下单人数", "曝光次数", "曝光提升数", "营业额"],
+        ["_sales", "_ad_gmv_base", "商家活动成本（含满减活动）", "有效订单", "曝光人数", "进店人数", "下单人数", "曝光次数", "曝光提升数", "营业额"],
     )
 
     mt_score = {}
@@ -1228,6 +1240,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_visit_lift = epr.get("进店提升数", 0.0)
         mt_ad_sales = mpr.get("推广营业额", 0.0)
         ele_ad_sales = epr.get("推广营业额", 0.0)
+        mt_ad_gmv_base = mt.get("_ad_gmv_base", 0.0) if mt_has_ad_gmv_base else mt_sales
+        ele_ad_gmv_base = el.get("_ad_gmv_base", 0.0) if ele_has_ad_gmv_base else ele_sales
 
         total_sales = total_op["sales"]
         total_discount = total_op["discount"]
@@ -1240,6 +1254,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         total_spend = mt_spend + ele_spend
         total_visit_lift = mt_visit_lift + ele_visit_lift
         total_ad_sales = mt_ad_sales + ele_ad_sales
+        total_ad_gmv_base = mt_ad_gmv_base + ele_ad_gmv_base
 
         score_vals = [v for v in [mt_score.get(code), ele_score.get(code)] if v not in (None, 0)]
         metrics[code] = {
@@ -1266,7 +1281,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_visits": total_visit_lift,
                 "ad_roi": safe_div(total_ad_sales, total_spend),
                 "ad_orig": total_ad_sales,
-                "ad_gmv_share": safe_div(total_ad_sales, total_sales),
+                "ad_gmv_base": total_ad_gmv_base,
+                "ad_gmv_share": safe_div(total_ad_sales, total_ad_gmv_base),
                 "score": sum(score_vals) / len(score_vals) if score_vals else None,
                 "good": mt_r.get(code, {}).get("good", 0.0) + ele_r.get(code, {}).get("good", 0.0),
                 "bad": mt_r.get(code, {}).get("bad", 0.0) + ele_r.get(code, {}).get("bad", 0.0),
@@ -1291,7 +1307,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_visits": mt_visit_lift,
                 "ad_roi": safe_div(mt_ad_sales, mt_spend),
                 "ad_orig": mt_ad_sales,
-                "ad_gmv_share": safe_div(mt_ad_sales, mt_sales),
+                "ad_gmv_base": mt_ad_gmv_base,
+                "ad_gmv_share": safe_div(mt_ad_sales, mt_ad_gmv_base),
                 "score": mt_score.get(code),
                 "good": mt_r.get(code, {}).get("good", 0.0),
                 "bad": mt_r.get(code, {}).get("bad", 0.0),
@@ -1316,7 +1333,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_visits": ele_visit_lift,
                 "ad_roi": safe_div(ele_ad_sales, ele_spend),
                 "ad_orig": ele_ad_sales,
-                "ad_gmv_share": safe_div(ele_ad_sales, ele_sales),
+                "ad_gmv_base": ele_ad_gmv_base,
+                "ad_gmv_share": safe_div(ele_ad_sales, ele_ad_gmv_base),
                 "score": ele_score.get(code),
                 "good": ele_r.get(code, {}).get("good", 0.0),
                 "bad": ele_r.get(code, {}).get("bad", 0.0),
@@ -1389,7 +1407,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal["order_rate"] = safe_div(buyer_sum, entry_sum)
         subtotal["ad_share"] = safe_div(subtotal["paid_exp"], subtotal["exp_count"])
         subtotal["ad_roi"] = safe_div(subtotal["ad_orig"], subtotal["ad_spend"])
-        subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], subtotal.get("sales", 0.0))
+        ad_gmv_base = subtotal.get("ad_gmv_base", 0.0) if scope in {"total", "mt", "ele"} else subtotal.get("sales", 0.0)
+        subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], ad_gmv_base)
         totals[scope] = subtotal
     return metrics, totals
 
