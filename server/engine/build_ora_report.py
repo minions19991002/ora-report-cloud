@@ -1422,6 +1422,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_roi": safe_div(total_ad_sales, total_spend),
                 "ad_orig": total_ad_sales,
                 "ad_orders": total_ad_orders,
+                "ad_bid": safe_div(total_spend, total_visit_lift),
                 "ad_activity": safe_div(total_ad_orders, total_orders),
                 "ad_gmv_base": total_ad_gmv_base,
                 "ad_gmv_share": safe_div(total_ad_sales, total_ad_gmv_base),
@@ -1450,6 +1451,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_roi": safe_div(mt_ad_sales, mt_spend),
                 "ad_orig": mt_ad_sales,
                 "ad_orders": mt_ad_orders,
+                "ad_bid": safe_div(mt_spend, mt_visit_lift),
                 "ad_activity": safe_div(mt_ad_orders, mt_orders),
                 "ad_gmv_base": mt_ad_gmv_base,
                 "ad_gmv_share": safe_div(mt_ad_sales, mt_ad_gmv_base),
@@ -1478,6 +1480,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "ad_roi": safe_div(ele_ad_sales, ele_spend),
                 "ad_orig": ele_ad_sales,
                 "ad_orders": ele_ad_orders,
+                "ad_bid": safe_div(ele_spend, ele_visit_lift),
                 "ad_activity": safe_div(ele_ad_orders, ele_orders),
                 "ad_gmv_base": ele_ad_gmv_base,
                 "ad_gmv_share": safe_div(ele_ad_sales, ele_ad_gmv_base),
@@ -1522,7 +1525,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal: dict[str, float] = defaultdict(float)
         for code in [s.code for s in stores]:
             for key, value in metrics[code][scope].items():
-                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "ad_share", "ad_roi", "ad_activity", "ad_gmv_share", "score"}:
+                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "ad_share", "ad_roi", "ad_bid", "ad_activity", "ad_gmv_share", "score"}:
                     continue
                 if isinstance(value, (int, float)):
                     subtotal[key] += float(value)
@@ -1553,6 +1556,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal["order_rate"] = safe_div(buyer_sum, entry_sum)
         subtotal["ad_share"] = safe_div(subtotal["paid_exp"], subtotal["exp_count"])
         subtotal["ad_roi"] = safe_div(subtotal["ad_orig"], subtotal["ad_spend"])
+        subtotal["ad_bid"] = safe_div(subtotal.get("ad_spend", 0.0), subtotal.get("ad_visits", 0.0))
         subtotal["ad_activity"] = safe_div(subtotal.get("ad_orders", 0.0), subtotal.get("orders", 0.0))
         ad_gmv_base = subtotal.get("ad_gmv_base", 0.0) if scope in {"total", "mt", "ele"} else subtotal.get("sales", 0.0)
         subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], ad_gmv_base)
@@ -1703,8 +1707,12 @@ PACKAGE_CANONICAL = [
     "超大杯美式·耶加雪菲（双杯）",
     "超大杯美式·红宝石瑰夏（双杯）",
     "车厘子可可拿铁（双杯）",
+    "瑰夏滴滤咖啡套餐",
 ]
-PACKAGE_ALIASES = {"超大杯美式·红宝石瑰夏（双杯套餐）": "超大杯美式·红宝石瑰夏（双杯）"}
+PACKAGE_ALIASES = {
+    "超大杯美式·红宝石瑰夏（双杯套餐）": "超大杯美式·红宝石瑰夏（双杯）",
+    "瑰夏滴滤咖啡套餐": "瑰夏滴滤咖啡套餐",
+}
 
 
 def norm_product(name: str) -> str:
@@ -3396,7 +3404,7 @@ def write_promotion_comparison_sheet_reference(
         ("ad_orig", "推广营业额", "growth", "#,##0_ "),
         ("ad_orders", "推广订单数", "growth", "#,##0_ "),
         ("ad_roi", "营业额ROI", "diff", "0.0"),
-        ("ad_activity", "活动", "diff", "0.0"),
+        ("ad_bid", "出价", "diff", "0.0"),
         ("exp_count", "总曝光次数", "growth", "#,##0_ "),
         ("ad_share", "推广曝光占比", "diff", "0.0%"),
         ("paid_exp", "推广曝光次数", "growth", "#,##0_ "),
@@ -3410,12 +3418,15 @@ def write_promotion_comparison_sheet_reference(
         source = source or {}
         exp_count = scalar_num(source.get("exp_count", 0.0))
         paid_exp = scalar_num(source.get("paid_exp", 0.0))
+        ad_bid = source.get("ad_bid")
+        if ad_bid in (None, ""):
+            ad_bid = safe_div(source.get("ad_spend"), source.get("ad_visits"))
         return {
             "ad_spend": source.get("ad_spend"),
             "ad_orig": source.get("ad_orig"),
             "ad_orders": source.get("ad_orders"),
             "ad_roi": source.get("ad_roi"),
-            "ad_activity": source.get("ad_activity"),
+            "ad_bid": ad_bid,
             "exp_count": exp_count,
             "ad_share": source.get("ad_share"),
             "paid_exp": paid_exp,
@@ -3457,11 +3468,18 @@ def write_promotion_comparison_sheet_reference(
 
         row_values: dict[str, dict[str, Any]] = {}
         total_values: dict[str, Any] = {}
+        header_text_by_key = {
+            key: cell_text(sheet.cell(header_row, 2 + idx).value)
+            for idx, (key, _label, _mode, _fmt) in enumerate(fields)
+        }
         for row in range(header_row + 1, (sheet.max_row or header_row) + 1):
             label = cell_text(sheet.cell(row, 1).value)
             if not label:
                 continue
             values = {key: get_prev(sheet, row, 2 + idx) for idx, (key, _label, _mode, _fmt) in enumerate(fields)}
+            # Older generated reports used this position for "活动"; never treat that value as bid.
+            if "出价" not in header_text_by_key.get("ad_bid", ""):
+                values["ad_bid"] = None
             if label == "总计":
                 total_values = values
                 break
@@ -3489,6 +3507,7 @@ def write_promotion_comparison_sheet_reference(
             "ad_spend": nth_header_col(prev, prev_promo_header, ["消耗金额", "推广消耗"], occurrence, exact=False),
             "ad_roi": nth_header_col(prev, prev_promo_header, ["营业额ROI", *PROMO_ROI_ALIASES], occurrence, exact=False),
             "ad_orig": nth_header_col(prev, prev_promo_header, ["推广营业额", *PROMO_DEAL_AMOUNT_ALIASES], occurrence, exact=False),
+            "ad_visits": nth_header_col(prev, prev_promo_header, ["进店数", "访问提升数", "访问提升数(次)", "进店提升数"], occurrence, exact=False),
             "exp_count": nth_header_col(prev, prev_traffic_header, ["总曝光次数"], occurrence, exact=False),
         }
 
@@ -3506,15 +3525,7 @@ def write_promotion_comparison_sheet_reference(
                     return values
         return None
 
-    def previous_values(store: Store | None, scope: str) -> dict[str, Any]:
-        if store is None:
-            if prev_comparison_totals.get(scope):
-                return prev_comparison_totals[scope]
-        else:
-            found = comparison_lookup(store, scope)
-            if found is not None:
-                return found
-
+    def fallback_previous_values(store: Store | None, scope: str) -> dict[str, Any]:
         promo_row = prev_promo_total_row if store is None else matched_row_by_store(store, prev_promo_by_code, prev_promo_by_name)
         traffic_row = prev_traffic_total_row if store is None else matched_row_by_store(store, prev_traffic_by_code, prev_traffic_by_name)
         cols = fallback_cols.get(scope, {})
@@ -3523,15 +3534,37 @@ def write_promotion_comparison_sheet_reference(
             "ad_orig": get_prev(prev, promo_row, cols.get("ad_orig")) if promo_row and cols.get("ad_orig") else None,
             "ad_orders": None,
             "ad_roi": get_prev(prev, promo_row, cols.get("ad_roi")) if promo_row and cols.get("ad_roi") else None,
-            "ad_activity": None,
+            "ad_visits": get_prev(prev, promo_row, cols.get("ad_visits")) if promo_row and cols.get("ad_visits") else None,
             "exp_count": get_prev(prev, traffic_row, cols.get("exp_count")) if traffic_row and cols.get("exp_count") else None,
             "ad_share": get_prev(prev, promo_row, cols.get("ad_share")) if promo_row and cols.get("ad_share") else None,
             "paid_exp": get_prev(prev, promo_row, cols.get("paid_exp")) if promo_row and cols.get("paid_exp") else None,
         }
+        if values.get("ad_spend") is not None and values.get("ad_visits") is not None:
+            values["ad_bid"] = safe_div(values.get("ad_spend"), values.get("ad_visits"))
+        else:
+            values["ad_bid"] = None
         exp_count = scalar_num(values.get("exp_count", 0.0))
         paid_exp = scalar_num(values.get("paid_exp", 0.0))
         values["natural_exp"] = max(exp_count - paid_exp, 0.0) if values.get("exp_count") is not None else None
         return values
+
+    def previous_values(store: Store | None, scope: str) -> dict[str, Any]:
+        found: dict[str, Any] | None = None
+        if store is None:
+            found = prev_comparison_totals.get(scope) or None
+        else:
+            found = comparison_lookup(store, scope)
+
+        if found is None:
+            return fallback_previous_values(store, scope)
+
+        if found.get("ad_bid") in (None, ""):
+            fallback = fallback_previous_values(store, scope)
+            merged = dict(fallback)
+            merged.update(found)
+            merged["ad_bid"] = fallback.get("ad_bid")
+            return merged
+        return found
 
     thin = Side(style="thin", color="000000")
     medium = Side(style="medium", color="000000")
