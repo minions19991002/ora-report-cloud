@@ -52,6 +52,7 @@ const HEADER_SIGNATURES = {
 };
 
 const XLSX_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+const UPLOAD_CONCURRENCY = 5;
 
 const filesByKey = new Map();
 const grid = document.querySelector("#fileGrid");
@@ -478,9 +479,9 @@ async function uploadFilesToSession() {
     uploaded += 1;
     return uploaded;
   };
-  const queue = [...REQUIRED_FILES];
+  const queue = [...REQUIRED_FILES].sort((a, b) => (filesByKey.get(b.key)?.size || 0) - (filesByKey.get(a.key)?.size || 0));
   const totalUploads = REQUIRED_FILES.length;
-  const workerCount = Math.min(2, queue.length);
+  const workerCount = Math.min(UPLOAD_CONCURRENCY, queue.length);
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (queue.length) {
