@@ -451,6 +451,23 @@ async function uploadFileToSession(uploadId, item, completed, total) {
   log(`已上传 ${uploaded}/${total}：${item.title}`);
 }
 
+async function uploadFileToSessionWithRetry(uploadId, item, completed, total) {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await uploadFileToSession(uploadId, item, completed, total);
+      return;
+    } catch (error) {
+      if (attempt === maxAttempts) {
+        throw new Error(`${item.title} 上传失败：${error?.message || String(error)}`);
+      }
+      const delaySeconds = attempt * 3;
+      log(`${item.title} 上传中断，${delaySeconds} 秒后重试（${attempt + 1}/${maxAttempts}）`);
+      await new Promise((resolve) => window.setTimeout(resolve, delaySeconds * 1000));
+    }
+  }
+}
+
 async function uploadFilesToSession() {
   const sessionResponse = await fetch("/api/upload-sessions", { method: "POST" });
   if (!sessionResponse.ok) throw new Error(await sessionResponse.text());
@@ -463,12 +480,12 @@ async function uploadFilesToSession() {
   };
   const queue = [...REQUIRED_FILES];
   const totalUploads = REQUIRED_FILES.length;
-  const workerCount = Math.min(5, queue.length);
+  const workerCount = Math.min(2, queue.length);
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
       while (queue.length) {
         const item = queue.shift();
-        await uploadFileToSession(uploadId, item, nextCompleted, totalUploads);
+        await uploadFileToSessionWithRetry(uploadId, item, nextCompleted, totalUploads);
       }
     }),
   );
