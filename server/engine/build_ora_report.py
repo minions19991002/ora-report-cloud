@@ -56,7 +56,7 @@ def export_label(start: pd.Timestamp, end: pd.Timestamp) -> str:
 
 CURRENT_SHEET = os.environ.get("ORA_CURRENT_SHEET", sheet_label(START, END))
 PREVIOUS_SHEET = os.environ.get("ORA_PREVIOUS_SHEET", sheet_label(PREV_START, PREV_END))
-PROMO_COMPARISON_SHEET = "推广数据对比"
+PROMO_COMPARISON_SHEET = "双平台推广"
 PERIOD_DAYS = int((END - START).days) + 1
 TEMPLATE_CURRENT_LABELS = ("6.15-6.21",)
 TEMPLATE_PREVIOUS_LABELS = ("6.8-6.14",)
