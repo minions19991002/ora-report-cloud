@@ -3392,11 +3392,15 @@ def write_promotion_comparison_sheet_reference(
     metrics: dict[str, dict[str, Any]],
     totals: dict[str, Any],
 ) -> None:
-    """Add the promotion comparison sheet using the locked reference layout."""
-    if PROMO_COMPARISON_SHEET in wb.sheetnames:
-        wb.remove(wb[PROMO_COMPARISON_SHEET])
-    insert_index = wb.sheetnames.index("上期") if "上期" in wb.sheetnames else len(wb.sheetnames)
-    ws = wb.create_sheet(PROMO_COMPARISON_SHEET, insert_index)
+    """Fill the template promotion comparison sheet, falling back to generated layout."""
+    using_template_sheet = PROMO_COMPARISON_SHEET in wb.sheetnames
+    if using_template_sheet:
+        ws = wb[PROMO_COMPARISON_SHEET]
+        if "上期" in wb.sheetnames and wb.sheetnames.index(PROMO_COMPARISON_SHEET) > wb.sheetnames.index("上期"):
+            wb.move_sheet(ws, offset=wb.sheetnames.index("上期") - wb.sheetnames.index(PROMO_COMPARISON_SHEET))
+    else:
+        insert_index = wb.sheetnames.index("上期") if "上期" in wb.sheetnames else len(wb.sheetnames)
+        ws = wb.create_sheet(PROMO_COMPARISON_SHEET, insert_index)
     prev = previous_period_sheet(prev_wb)
 
     fields = [
@@ -3565,6 +3569,156 @@ def write_promotion_comparison_sheet_reference(
             merged["ad_bid"] = fallback.get("ad_bid")
             return merged
         return found
+
+    def fill_template_promotion_sheet() -> bool:
+        if not using_template_sheet:
+            return False
+
+        store_lookup: dict[str, Store] = {}
+        for store in stores:
+            for key in (norm_store_name(store.name), norm_store_name(store.name_full)):
+                if key:
+                    store_lookup[key] = store
+
+        def find_template_block(keyword: str) -> dict[str, int] | None:
+            title_row = None
+            for row in range(1, (ws.max_row or 1) + 1):
+                if keyword in cell_text(ws.cell(row, 1).value):
+                    title_row = row
+                    break
+            if title_row is None:
+                return None
+
+            metric_row = None
+            for row in range(title_row + 1, min(ws.max_row or title_row, title_row + 6) + 1):
+                if "推广消耗" in cell_text(ws.cell(row, 2).value) and "推广营业额" in cell_text(ws.cell(row, 3).value):
+                    metric_row = row
+                    break
+            if metric_row is None:
+                return None
+
+            data_start = metric_row + 1
+            total_row = None
+            for row in range(data_start, (ws.max_row or data_start) + 1):
+                label = cell_text(ws.cell(row, 1).value)
+                if label == "总计":
+                    total_row = row
+                    break
+                if row > data_start and ("美团" in label or "饿了么" in label):
+                    break
+            if total_row is None:
+                return None
+
+            return {
+                "title_row": title_row,
+                "period_row": metric_row - 1,
+                "metric_row": metric_row,
+                "data_start": data_start,
+                "total_row": total_row,
+            }
+
+        def ensure_block_capacity(block: dict[str, int], required_rows: int) -> None:
+            capacity = block["total_row"] - block["data_start"]
+            if capacity >= required_rows:
+                return
+            rows_to_add = required_rows - capacity
+            insert_at = block["total_row"]
+            template_row = max(block["data_start"], block["total_row"] - 1)
+            ws.insert_rows(insert_at, rows_to_add)
+            for row in range(insert_at, insert_at + rows_to_add):
+                copy_row_template(ws, template_row, row, 28)
+            block["total_row"] += rows_to_add
+
+        def write_template_value(row: int, col: int, value: Any, number_format: str | None = None) -> None:
+            cell = ws.cell(row, col)
+            write(cell, value)
+            if number_format:
+                cell.number_format = number_format
+
+        def write_template_formula(row: int, col: int, formula: str, number_format: str | None = None) -> None:
+            cell = ws.cell(row, col)
+            if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+                cell.value = formula
+            if number_format:
+                cell.number_format = number_format
+
+        def fill_block(keyword: str, scope: str) -> bool:
+            block = find_template_block(keyword)
+            if not block:
+                return False
+            ensure_block_capacity(block, len(stores))
+            write_template_value(block["period_row"], 2, current_label)
+            write_template_value(block["period_row"], 11, previous_label)
+            write_template_value(block["period_row"], 20, "环比")
+
+            used_codes: set[str] = set()
+            next_store_idx = 0
+            data_rows = range(block["data_start"], block["total_row"])
+            for row in data_rows:
+                label_key = norm_store_name(ws.cell(row, 1).value)
+                store = store_lookup.get(label_key)
+                if store and store.code in used_codes:
+                    store = None
+                if store is None:
+                    while next_store_idx < len(stores) and stores[next_store_idx].code in used_codes:
+                        next_store_idx += 1
+                    store = stores[next_store_idx] if next_store_idx < len(stores) else None
+                if store is None:
+                    for col in range(1, 29):
+                        ws.cell(row, col).value = None
+                    continue
+
+                used_codes.add(store.code)
+                write_template_value(row, 1, store.name)
+                cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}))
+                prev_values = previous_values(store, scope)
+                for idx, (key, _label, mode, number_format) in enumerate(fields):
+                    cur_col = 2 + idx
+                    prev_col = 11 + idx
+                    comp_col = 20 + idx
+                    cur_value = cur_values.get(key)
+                    prev_value = prev_values.get(key)
+                    write_template_value(row, cur_col, cur_value, number_format)
+                    write_template_value(row, prev_col, prev_value, number_format)
+                    if mode == "growth":
+                        formula = f"=IFERROR({ws.cell(row, cur_col).coordinate}/{ws.cell(row, prev_col).coordinate}-1,0)"
+                        formula_format = "0.0%"
+                    else:
+                        formula = f"={ws.cell(row, cur_col).coordinate}-{ws.cell(row, prev_col).coordinate}"
+                        formula_format = number_format
+                    write_template_formula(row, comp_col, formula, formula_format)
+
+            total_row = block["total_row"]
+            write_template_value(total_row, 1, "总计")
+            total_values = metric_values(totals.get(scope, {}))
+            prev_total_values = previous_values(None, scope)
+            for idx, (key, _label, mode, number_format) in enumerate(fields):
+                cur_col = 2 + idx
+                prev_col = 11 + idx
+                comp_col = 20 + idx
+                write_template_value(total_row, cur_col, total_values.get(key), number_format)
+                write_template_value(total_row, prev_col, prev_total_values.get(key), number_format)
+                if mode == "growth":
+                    formula = f"=IFERROR({ws.cell(total_row, cur_col).coordinate}/{ws.cell(total_row, prev_col).coordinate}-1,0)"
+                    formula_format = "0.0%"
+                else:
+                    formula = f"={ws.cell(total_row, cur_col).coordinate}-{ws.cell(total_row, prev_col).coordinate}"
+                    formula_format = number_format
+                write_template_formula(total_row, comp_col, formula, formula_format)
+            return True
+
+        ok = fill_block("美团", "mt") and fill_block("饿了么", "ele")
+        if ok:
+            ws.sheet_view.showGridLines = False
+        return ok
+
+    if fill_template_promotion_sheet():
+        return
+
+    if using_template_sheet:
+        wb.remove(ws)
+        insert_index = wb.sheetnames.index("上期") if "上期" in wb.sheetnames else len(wb.sheetnames)
+        ws = wb.create_sheet(PROMO_COMPARISON_SHEET, insert_index)
 
     thin = Side(style="thin", color="000000")
     medium = Side(style="medium", color="000000")
