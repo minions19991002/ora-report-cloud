@@ -1218,6 +1218,49 @@ def apply_negative_growth_red(wb) -> None:
                         data_cell.font = font
 
 
+def apply_score_formatting(wb) -> None:
+    """Keep generated score cells to one decimal and mark scores below 4.5 in red."""
+    red_font = Font(color="FF0000")
+
+    def format_score_cells(ws, rows: list[int], cols: list[int]) -> None:
+        if not rows:
+            return
+        min_row = min(rows)
+        max_row = max(rows)
+        for col in cols:
+            col_letter = get_column_letter(col)
+            ws.conditional_formatting.add(
+                f"{col_letter}{min_row}:{col_letter}{max_row}",
+                CellIsRule(operator="lessThan", formula=["4.5"], font=red_font),
+            )
+            for row in rows:
+                cell = ws.cell(row, col)
+                cell.number_format = "0.0"
+                if isinstance(cell.value, (int, float)) and cell.value < 4.5:
+                    font = copy(cell.font)
+                    font.color = "FF0000"
+                    cell.font = font
+
+    if CURRENT_SHEET in wb.sheetnames:
+        ws = wb[CURRENT_SHEET]
+        score_by_code, score_by_name = section_store_row_maps(ws, "门店评分", 63, 78)
+        rows = sorted(set(score_by_code.values()) | set(score_by_name.values()))
+        format_score_cells(ws, rows, [4, 14, 24])
+
+    if "V2" in wb.sheetnames:
+        ws = wb["V2"]
+        score_header = find_v2_score_header(ws)
+        if score_header:
+            score_start = score_header + 1
+            score_end = contiguous_store_end(ws, score_start, max(ws.max_row or score_start, score_start), 1, 2)
+            by_code, by_name = sheet_store_row_maps(ws, score_start, max(score_end, score_start - 1), 1, 2)
+        else:
+            score_end = contiguous_store_end(ws, 85, max(ws.max_row or 85, 85), 1, 2)
+            by_code, by_name = sheet_store_row_maps(ws, 85, max(score_end, 84), 1, 2)
+        rows = sorted(set(by_code.values()) | set(by_name.values()))
+        format_score_cells(ws, rows, [3, 6])
+
+
 def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     mt_store = current_rows(read_excel("美团门店数据.xlsx"), "日期")
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
@@ -3919,6 +3962,7 @@ def main() -> None:
     normalize_generated_metric_labels(wb)
     apply_total_row_bold(wb)
     apply_negative_growth_red(wb)
+    apply_score_formatting(wb)
 
     if hasattr(wb, "calculation"):
         wb.calculation.fullCalcOnLoad = True
