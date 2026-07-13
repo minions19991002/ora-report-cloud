@@ -1930,35 +1930,29 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
     prev_mt_src, prev_ele_src = load_product_period(PREV_START, PREV_END)
     single_ag = single_aggregate_from_ora_product()
 
-    rows: list[dict[str, Any]] = []
-    denom = total_store_days or PERIOD_DAYS
-    for _, row in single_ag.iterrows():
-        name = str(row["_name"])
-        rows.append(
-            {
-                "name": name,
-                "category": infer_category(name, category_map),
-                "qty": float(row["qty"]),
-                "usd": safe_div(row["qty"], denom),
-                "sales": float(row["sales"]),
-            }
-        )
-
-    pkg_lookup = package_lookup(mt, ele)
-    new_packages = sorted([name for name in pkg_lookup if name not in PACKAGE_CANONICAL], key=lambda n: pkg_lookup[n]["qty"], reverse=True)
-
-    pkg_rows: list[dict[str, Any]] = []
-    for name in PACKAGE_CANONICAL + new_packages:
-        vals = pkg_lookup.get(name, {"qty": 0.0, "sales": 0.0})
-        pkg_rows.append({"name": name, "qty": vals["qty"], "usd": safe_div(vals["qty"], denom), "sales": vals["sales"]})
-    pkg_rows.sort(key=lambda item: (-float(item.get("qty") or 0), -float(item.get("sales") or 0), str(item.get("name") or "")))
-
     prev_single_qty: dict[str, float] = {}
     for row in range(2, prev_single_total_row):
         name = prev_single.cell(row, 3).value
         qty = prev_single.cell(row, 4).value
         if name:
             prev_single_qty[str(name)] = float(qty or 0)
+
+    rows: list[dict[str, Any]] = []
+    denom = total_store_days or PERIOD_DAYS
+    for _, row in single_ag.iterrows():
+        name = str(row["_name"])
+        qty = float(row["qty"])
+        if abs(qty) < 1e-12 and abs(prev_single_qty.get(name, 0.0)) < 1e-12:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "category": infer_category(name, category_map),
+                "qty": qty,
+                "usd": safe_div(qty, denom),
+                "sales": float(row["sales"]),
+            }
+        )
 
     prev_pkg_qty: dict[str, float] = {}
     prev_pkg_lookup = package_lookup(prev_mt_src, prev_ele_src)
@@ -1972,6 +1966,20 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
             if name:
                 canon = canonical_package(name) or str(name)
                 prev_pkg_qty[canon] = prev_pkg_qty.get(canon, 0.0) + float(qty or 0)
+
+    pkg_lookup = package_lookup(mt, ele)
+    new_packages = sorted([name for name in pkg_lookup if name not in PACKAGE_CANONICAL], key=lambda n: pkg_lookup[n]["qty"], reverse=True)
+
+    pkg_rows: list[dict[str, Any]] = []
+    for name in PACKAGE_CANONICAL + new_packages:
+        vals = pkg_lookup.get(name, {"qty": 0.0, "sales": 0.0})
+        qty = float(vals["qty"])
+        if abs(qty) < 1e-12 and abs(prev_pkg_qty.get(name, 0.0)) < 1e-12:
+            continue
+        pkg_rows.append({"name": name, "qty": qty, "usd": safe_div(qty, denom), "sales": vals["sales"]})
+    pkg_rows.sort(key=lambda item: (-float(item.get("qty") or 0), -float(item.get("sales") or 0), str(item.get("name") or "")))
+    visible_package_names = {str(item["name"]) for item in pkg_rows}
+    new_packages = [name for name in new_packages if name in visible_package_names]
 
     return rows, pkg_rows, prev_single_qty, prev_pkg_qty, new_packages
 
@@ -3066,16 +3074,16 @@ def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg
     template_total_row = find_label_row(ws, "总计", None, 2) or 63
     prev_total_row = find_label_row(prev, "总计", None, 2) or 63
     existing_capacity = max(template_total_row - 2, 0)
-    previous_capacity = max(prev_total_row - 2, 0)
-    needed_capacity = max(len(single_rows), existing_capacity, previous_capacity)
+    needed_capacity = len(single_rows)
     if needed_capacity > existing_capacity:
         rows_to_add = needed_capacity - existing_capacity
         ws.insert_rows(template_total_row, rows_to_add)
         for row in range(template_total_row, template_total_row + rows_to_add):
             copy_row_style(ws, template_total_row - 1, row, 13)
+    elif needed_capacity < existing_capacity:
+        ws.delete_rows(2 + needed_capacity, existing_capacity - needed_capacity)
     total_row = 2 + needed_capacity
-    clear_end = max(total_row - 1, template_total_row - 1)
-    for row in range(2, clear_end + 1):
+    for row in range(2, total_row):
         for col in range(1, 9):
             ws.cell(row, col).value = None
         ws.cell(row, 12).value = None
@@ -3105,10 +3113,13 @@ def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg
     needed_rows = len(pkg_rows)
     total_row = 2 + needed_rows
     existing_total = 9
-    if needed_rows > 7:
-        ws2.insert_rows(existing_total, needed_rows - 7)
+    existing_capacity = max(existing_total - 2, 0)
+    if needed_rows > existing_capacity:
+        ws2.insert_rows(existing_total, needed_rows - existing_capacity)
         for r in range(existing_total, total_row):
             copy_row_style(ws2, existing_total - 1, r, 13)
+    elif needed_rows < existing_capacity:
+        ws2.delete_rows(2 + needed_rows, existing_capacity - needed_rows)
     ws2.cell(1, 12).value = "产品名"
     ws2.cell(1, 13).value = "销售量"
     for r in range(2, total_row):
@@ -3915,13 +3926,14 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
     validation["store_presence"]["订单距离及实付区间"] = sorted(expected_codes - distance_codes)
     current_total_row = find_section_total_row(cur_ws, "营业数据", 19)
     promo_total_row = find_section_total_row(cur_ws, "推广数据", 59)
+    package_total_row = find_label_row(wb_formula["商品销售排行-套餐"], "总计", None, 1) or 9
     validation["key_cells"] = {
         "current_total_sales": wb_formula[CURRENT_SHEET][f"E{current_total_row}"].value,
         "current_total_orders": wb_formula[CURRENT_SHEET][f"J{current_total_row}"].value,
         "current_mt_ad_spend": wb_formula[CURRENT_SHEET][f"Q{promo_total_row}"].value,
         "current_ele_ad_spend": wb_formula[CURRENT_SHEET][f"AA{promo_total_row}"].value,
         "single_top_product": wb_formula["商品销售排行-单品"]["C2"].value,
-        "package_total_qty": wb_formula["商品销售排行-套餐"]["C" + str(2 + 7 + len(new_packages))].value,
+        "package_total_qty": wb_formula["商品销售排行-套餐"][f"C{package_total_row}"].value,
         "complaint_total": wb_formula["用户体验-客诉"]["D17"].value,
         "delivery_mt_first": wb_formula["用户体验-配送"]["H3"].value,
         "delivery_ele_first": wb_formula["用户体验-配送"]["O3"].value,
