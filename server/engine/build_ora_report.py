@@ -1261,6 +1261,176 @@ def apply_score_formatting(wb) -> None:
         format_score_cells(ws, rows, [3, 6])
 
 
+def has_value(value: Any) -> bool:
+    if value in (None, ""):
+        return False
+    try:
+        return not bool(pd.isna(value))
+    except Exception:
+        return True
+
+
+def promotion_raw_metrics_for_period(
+    stores: list[Store],
+    mt_to_code: dict[str, str],
+    ele_to_code: dict[str, str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, Any]]]:
+    """Calculate 双平台推广 metrics from source files for a specific date range."""
+
+    def clean_mt_promo(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df["_id"] = df["门店ID"].map(norm_id)
+        df["code"] = df["_id"].map(mt_to_code)
+        mt_exclude = ["津贴联盟", "赏金联盟", "流量助手", "金字招牌", "袋鼠店长", "品牌装修", "应用市场", "短信通", "拼好饭"]
+        text_cols = [c for c in ["推广产品", "计划名称", "营销场景"] if c in df.columns]
+        if text_cols:
+            mask = pd.Series(False, index=df.index)
+            for col in text_cols:
+                mask |= df[col].astype(str).apply(lambda x: any(term in x for term in mt_exclude))
+            df = df[~mask].copy()
+        df = df[df["code"].notna()].copy()
+        df = normalize_numeric_column(df, "推广营业额", PROMO_SALES_ALIASES, "美团推广.xlsx")
+        df = normalize_numeric_column(df, "推广订单数", PROMO_ORDER_ALIASES, "美团推广.xlsx")
+        return df
+
+    def clean_ele_promo(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.copy()
+        df["_id"] = df["门店ID"].map(norm_id)
+        df["code"] = df["_id"].map(ele_to_code)
+        text_cols = [c for c in ["推广产品", "计划名称"] if c in df.columns]
+        if text_cols:
+            mask = pd.Series(False, index=df.index)
+            for col in text_cols:
+                mask |= df[col].astype(str).str.contains("增量助手", na=False)
+            df = df[~mask].copy()
+        df = df[df["code"].notna()].copy()
+        df = normalize_numeric_column(df, "推广营业额", PROMO_SALES_ALIASES, "饿了么推广.xlsx")
+        df = normalize_numeric_column(df, "推广订单数", PROMO_ORDER_ALIASES, "饿了么推广.xlsx")
+        return df
+
+    def source_value(grouped: dict[str, dict[str, float]], code: str, col: str, source_has_period_rows: bool) -> float | None:
+        if not source_has_period_rows:
+            return None
+        return grouped.get(code, {}).get(col, 0.0)
+
+    def build_scope_values(
+        code: str,
+        store_ag: dict[str, dict[str, float]],
+        promo_ag: dict[str, dict[str, float]],
+        *,
+        exp_col: str,
+        paid_exp_col: str,
+        spend_col: str,
+        visit_col: str,
+        paid_exp_from_store: bool,
+        store_has_period_rows: bool,
+        promo_has_period_rows: bool,
+    ) -> dict[str, Any]:
+        exp_count = source_value(store_ag, code, exp_col, store_has_period_rows)
+        paid_exp = (
+            source_value(store_ag, code, paid_exp_col, store_has_period_rows)
+            if paid_exp_from_store
+            else source_value(promo_ag, code, paid_exp_col, promo_has_period_rows)
+        )
+        ad_spend = source_value(promo_ag, code, spend_col, promo_has_period_rows)
+        ad_visits = source_value(promo_ag, code, visit_col, promo_has_period_rows)
+        ad_orig = source_value(promo_ag, code, "推广营业额", promo_has_period_rows)
+        ad_orders = source_value(promo_ag, code, "推广订单数", promo_has_period_rows)
+        ad_roi = safe_div(ad_orig, ad_spend) if has_value(ad_orig) and has_value(ad_spend) else None
+        if ad_roi is None and promo_has_period_rows and scalar_num(ad_orig) == 0 and scalar_num(ad_spend) == 0:
+            ad_roi = 0.0
+        ad_bid = safe_div(ad_spend, ad_visits) if has_value(ad_spend) and has_value(ad_visits) else None
+        if ad_bid is None and promo_has_period_rows and scalar_num(ad_spend) == 0 and scalar_num(ad_visits) == 0:
+            ad_bid = 0.0
+        return {
+            "ad_spend": ad_spend,
+            "ad_orig": ad_orig,
+            "ad_orders": ad_orders,
+            "ad_roi": ad_roi,
+            "ad_bid": ad_bid,
+            "ad_visits": ad_visits,
+            "exp_count": exp_count,
+            "ad_share": safe_div(paid_exp, exp_count) if has_value(paid_exp) and has_value(exp_count) else None,
+            "paid_exp": paid_exp,
+            "natural_exp": max(float(exp_count) - float(paid_exp), 0.0) if has_value(exp_count) and has_value(paid_exp) else None,
+        }
+
+    def total_scope(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        total: dict[str, Any] = {}
+        for key in ["ad_spend", "ad_orig", "ad_orders", "ad_visits", "exp_count", "paid_exp"]:
+            present = [float(row[key]) for row in rows if has_value(row.get(key))]
+            total[key] = sum(present) if present else None
+        total["ad_roi"] = safe_div(total.get("ad_orig"), total.get("ad_spend")) if has_value(total.get("ad_orig")) and has_value(total.get("ad_spend")) else None
+        total["ad_bid"] = safe_div(total.get("ad_spend"), total.get("ad_visits")) if has_value(total.get("ad_spend")) and has_value(total.get("ad_visits")) else None
+        total["ad_share"] = safe_div(total.get("paid_exp"), total.get("exp_count")) if has_value(total.get("paid_exp")) and has_value(total.get("exp_count")) else None
+        total["natural_exp"] = (
+            max(float(total["exp_count"]) - float(total["paid_exp"]), 0.0)
+            if has_value(total.get("exp_count")) and has_value(total.get("paid_exp"))
+            else None
+        )
+        return total
+
+    mt_store = period_rows(read_excel("美团门店数据.xlsx"), "日期", start, end)
+    mt_store["_id"] = mt_store["门店id"].map(norm_id)
+    mt_store["code"] = mt_store["_id"].map(mt_to_code)
+    mt_store = mt_store[mt_store["code"].notna()].copy()
+    mt_store_has_period_rows = not mt_store.empty
+    mt_paid_exp_from_store = "曝光提升数(次)" in mt_store.columns
+    mt_ag = sum_by_store(mt_store, "code", ["曝光次数", "曝光提升数(次)"])
+
+    ele_store = period_rows(read_excel("饿了么门店数据.xlsx"), "日期", start, end)
+    ele_store["_id"] = ele_store["门店编号"].map(norm_id)
+    ele_store["code"] = ele_store["_id"].map(ele_to_code)
+    ele_store = ele_store[ele_store["code"].notna()].copy()
+    ele_store_has_period_rows = not ele_store.empty
+    ele_paid_exp_from_store = "曝光提升数" in ele_store.columns
+    ele_ag = sum_by_store(ele_store, "code", ["曝光次数", "曝光提升数"])
+
+    mt_promo = clean_mt_promo(period_rows(read_excel("美团推广.xlsx", sheet_name="效果数据"), "日期", start, end))
+    mt_promo_has_period_rows = not mt_promo.empty
+    mt_pr = sum_by_store(mt_promo, "code", ["推广消费实付(元)", "曝光提升数(次)", "访问提升数(次)", "推广营业额", "推广订单数"])
+
+    ele_promo = clean_ele_promo(period_rows(read_excel("饿了么推广.xlsx"), "日期", start, end))
+    ele_promo_has_period_rows = not ele_promo.empty
+    ele_pr = sum_by_store(ele_promo, "code", ["推广现金消费(元)", "曝光提升数", "进店提升数", "推广营业额", "推广订单数"])
+
+    by_code: dict[str, dict[str, dict[str, Any]]] = {}
+    for store in stores:
+        mt_values = build_scope_values(
+            store.code,
+            mt_ag,
+            mt_pr,
+            exp_col="曝光次数",
+            paid_exp_col="曝光提升数(次)",
+            spend_col="推广消费实付(元)",
+            visit_col="访问提升数(次)",
+            paid_exp_from_store=mt_paid_exp_from_store,
+            store_has_period_rows=mt_store_has_period_rows,
+            promo_has_period_rows=mt_promo_has_period_rows,
+        )
+        ele_values = build_scope_values(
+            store.code,
+            ele_ag,
+            ele_pr,
+            exp_col="曝光次数",
+            paid_exp_col="曝光提升数",
+            spend_col="推广现金消费(元)",
+            visit_col="进店提升数",
+            paid_exp_from_store=ele_paid_exp_from_store,
+            store_has_period_rows=ele_store_has_period_rows,
+            promo_has_period_rows=ele_promo_has_period_rows,
+        )
+        by_code[store.code] = {"mt": mt_values, "ele": ele_values}
+
+    totals = {
+        "mt": total_scope([by_code[store.code]["mt"] for store in stores]),
+        "ele": total_scope([by_code[store.code]["ele"] for store in stores]),
+    }
+    return by_code, totals
+
+
 def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     mt_store = current_rows(read_excel("美团门店数据.xlsx"), "日期")
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
@@ -1927,7 +2097,6 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         return {str(r["_canon"]): {"qty": float(r["qty"]), "sales": float(r["sales"])} for _, r in pkg_ag.iterrows()}
 
     mt, ele = load_product_period(START, END)
-    prev_mt_src, prev_ele_src = load_product_period(PREV_START, PREV_END)
     single_ag = single_aggregate_from_ora_product()
 
     prev_single_qty: dict[str, float] = {}
@@ -1955,17 +2124,14 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         )
 
     prev_pkg_qty: dict[str, float] = {}
-    prev_pkg_lookup = package_lookup(prev_mt_src, prev_ele_src)
-    if prev_pkg_lookup:
-        prev_pkg_qty = {name: vals["qty"] for name, vals in prev_pkg_lookup.items()}
-    else:
-        prev_pkg = prev_wb["商品销售排行-套餐"]
-        for row in range(2, 9):
-            name = prev_pkg.cell(row, 2).value
-            qty = prev_pkg.cell(row, 3).value
-            if name:
-                canon = canonical_package(name) or str(name)
-                prev_pkg_qty[canon] = prev_pkg_qty.get(canon, 0.0) + float(qty or 0)
+    prev_pkg = prev_wb["商品销售排行-套餐"]
+    prev_pkg_total_row = find_label_row(prev_pkg, "总计", None, 1) or 9
+    for row in range(2, prev_pkg_total_row):
+        name = prev_pkg.cell(row, 2).value
+        qty = prev_pkg.cell(row, 3).value
+        if name:
+            canon = canonical_package(name) or str(name)
+            prev_pkg_qty[canon] = prev_pkg_qty.get(canon, 0.0) + float(qty or 0)
 
     pkg_lookup = package_lookup(mt, ele)
     new_packages = sorted([name for name in pkg_lookup if name not in PACKAGE_CANONICAL], key=lambda n: pkg_lookup[n]["qty"], reverse=True)
@@ -3443,6 +3609,8 @@ def write_promotion_comparison_sheet_reference(
     wb,
     prev_wb,
     stores: list[Store],
+    mt_to_code: dict[str, str],
+    ele_to_code: dict[str, str],
     metrics: dict[str, dict[str, Any]],
     totals: dict[str, Any],
 ) -> None:
@@ -3550,6 +3718,7 @@ def write_promotion_comparison_sheet_reference(
     if comparison_sheet is not None:
         prev_comparison["mt"], prev_comparison_totals["mt"] = previous_block_values(comparison_sheet, "美团")
         prev_comparison["ele"], prev_comparison_totals["ele"] = previous_block_values(comparison_sheet, "饿了么")
+    prev_source_by_code, prev_source_totals = promotion_raw_metrics_for_period(stores, mt_to_code, ele_to_code, PREV_START, PREV_END)
 
     prev_promo_by_code, prev_promo_by_name = section_store_row_maps(prev, "推广数据", 43, 58, 2, 3)
     prev_traffic_by_code, prev_traffic_by_name = section_store_row_maps(prev, "流量数据", 23, 38, 2, 3)
@@ -3606,6 +3775,31 @@ def write_promotion_comparison_sheet_reference(
         values["natural_exp"] = max(exp_count - paid_exp, 0.0) if values.get("exp_count") is not None else None
         return values
 
+    def merge_promotion_sources(*sources: dict[str, Any] | None) -> dict[str, Any]:
+        keys = [key for key, _label, _mode, _fmt in fields] + ["ad_visits"]
+        merged: dict[str, Any] = {}
+        for key in keys:
+            for source in sources:
+                if source and has_value(source.get(key)):
+                    merged[key] = source.get(key)
+                    break
+            else:
+                merged[key] = None
+        if not has_value(merged.get("ad_roi")) and has_value(merged.get("ad_orig")) and has_value(merged.get("ad_spend")):
+            merged["ad_roi"] = safe_div(merged.get("ad_orig"), merged.get("ad_spend"))
+        if not has_value(merged.get("ad_bid")) and has_value(merged.get("ad_spend")) and has_value(merged.get("ad_visits")):
+            merged["ad_bid"] = safe_div(merged.get("ad_spend"), merged.get("ad_visits"))
+        if not has_value(merged.get("ad_share")) and has_value(merged.get("paid_exp")) and has_value(merged.get("exp_count")):
+            merged["ad_share"] = safe_div(merged.get("paid_exp"), merged.get("exp_count"))
+        if not has_value(merged.get("natural_exp")) and has_value(merged.get("exp_count")) and has_value(merged.get("paid_exp")):
+            merged["natural_exp"] = max(float(merged["exp_count"]) - float(merged["paid_exp"]), 0.0)
+        return merged
+
+    def raw_previous_values(store: Store | None, scope: str) -> dict[str, Any] | None:
+        if store is None:
+            return prev_source_totals.get(scope)
+        return prev_source_by_code.get(store.code, {}).get(scope)
+
     def previous_values(store: Store | None, scope: str) -> dict[str, Any]:
         found: dict[str, Any] | None = None
         if store is None:
@@ -3613,16 +3807,7 @@ def write_promotion_comparison_sheet_reference(
         else:
             found = comparison_lookup(store, scope)
 
-        if found is None:
-            return fallback_previous_values(store, scope)
-
-        if found.get("ad_bid") in (None, ""):
-            fallback = fallback_previous_values(store, scope)
-            merged = dict(fallback)
-            merged.update(found)
-            merged["ad_bid"] = fallback.get("ad_bid")
-            return merged
-        return found
+        return merge_promotion_sources(raw_previous_values(store, scope), found, fallback_previous_values(store, scope))
 
     def fill_template_promotion_sheet() -> bool:
         if not using_template_sheet:
@@ -3962,7 +4147,7 @@ def main() -> None:
     copy_previous_week_to_previous_sheet(wb, prev_wb, prev_wb_format)
     ensure_report_store_rows(wb, stores)
     write_main_sheet(wb, prev_wb, stores, metrics, totals)
-    write_promotion_comparison_sheet_reference(wb, prev_wb, stores, metrics, totals)
+    write_promotion_comparison_sheet_reference(wb, prev_wb, stores, mt_to_code, ele_to_code, metrics, totals)
     write_v2(wb, stores)
     write_distance_and_paid(wb, prev_wb, distance, paid, stores)
     write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg_qty, totals["biz_days"] or PERIOD_DAYS, new_packages)
