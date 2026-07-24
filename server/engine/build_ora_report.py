@@ -3625,18 +3625,24 @@ def fill_delivery_values(wb, prev_wb, mt_delivery, ele_delivery, mt_to_code, ele
     prev_start, prev_end = delivery_row_bounds(prev)
     prev_maps = delivery_row_maps(prev, prev_start, max(prev_end, prev_start - 1))
     start, end = delivery_row_bounds(ws)
+
+    def write_delivery_number(row: int, col: int, value: Any) -> None:
+        cell = ws.cell(row, col)
+        write(cell, value)
+        cell.number_format = "0.00"
+
     for row in range(start, end + 1):
         mt_code = mt_to_code.get(norm_id(ws.cell(row, 4).value))
         ele_code = ele_to_code.get(norm_id(ws.cell(row, 3).value))
         prev_row = matched_delivery_row(ws, row, prev_maps) or row
         mt_cur = mt_delivery.get(mt_code) if mt_code else None
         ele_cur = ele_delivery.get(ele_code) if ele_code else None
-        write(ws.cell(row, 8), mt_cur)
-        write(ws.cell(row, 9), prev.cell(prev_row, 8).value)
-        write(ws.cell(row, 10), diff(mt_cur, ws.cell(row, 9).value))
-        write(ws.cell(row, 15), ele_cur)
-        write(ws.cell(row, 16), prev.cell(prev_row, 15).value)
-        write(ws.cell(row, 17), diff(ele_cur, ws.cell(row, 16).value))
+        write_delivery_number(row, 8, mt_cur)
+        write_delivery_number(row, 9, prev.cell(prev_row, 8).value)
+        write_delivery_number(row, 10, diff(mt_cur, ws.cell(row, 9).value))
+        write_delivery_number(row, 15, ele_cur)
+        write_delivery_number(row, 16, prev.cell(prev_row, 15).value)
+        write_delivery_number(row, 17, diff(ele_cur, ws.cell(row, 16).value))
 
 
 def copy_previous_week_to_previous_sheet(wb, prev_wb, prev_wb_format) -> None:
