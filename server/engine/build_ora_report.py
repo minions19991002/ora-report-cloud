@@ -841,7 +841,12 @@ def ensure_report_store_rows(wb, stores: list[Store]) -> None:
 
 
 def build_store_list() -> tuple[list[Store], dict[str, str], dict[str, str]]:
-    df = read_excel("ORA门店信息表.xlsx").dropna(how="all")
+    df = rename_columns_by_alias(
+        read_excel("ORA门店信息表.xlsx").dropna(how="all"),
+        STORE_INFO_COLUMNS,
+        source_name="ORA门店信息表.xlsx",
+        required=["店号", "门店名称", "饿了么门店ID", "美团门店ID"],
+    )
     stores: list[Store] = []
     mt_to_code: dict[str, str] = {}
     ele_to_code: dict[str, str] = {}
@@ -852,7 +857,7 @@ def build_store_list() -> tuple[list[Store], dict[str, str], dict[str, str]]:
             name_full=str(row["门店名称"]).strip(),
             ele_id=norm_id(row["饿了么门店ID"]),
             mt_id=norm_id(row["美团门店ID"]),
-            name=str(row["店名"]).strip(),
+            name=str(row.get("店名") or row["门店名称"]).strip(),
             code=str(row["店号"]).strip(),
         )
         stores.append(store)
@@ -885,9 +890,153 @@ ORA_DAILY_VALUE_COLUMNS = {
     "sales_channel": ["sales_channel", "销售渠道", "渠道", "平台"],
     "gross_amount": ["gross_amount", "销售额", "总sales", "营业额"],
     "order_count": ["order_count", "订单数", "有效订单", "ADT"],
+}
+ORA_DAILY_OPTIONAL_COLUMNS = {
     "discount_amount": ["discount_amount", "优惠金额", "商户折扣金额", "折扣金额"],
 }
 ORA_DAILY_COLUMNS = {"date_id": ["date_id", "日期"], **ORA_DAILY_VALUE_COLUMNS}
+
+STORE_INFO_COLUMNS = {
+    "店号": ["店号", "门店编码", "门店代码"],
+    "门店名称": ["门店名称", "店铺名称"],
+    "店名": ["店名", "门店简称"],
+    "饿了么门店ID": ["饿了么门店ID", "饿了么门店id", "饿了么店铺ID", "饿了么店铺id"],
+    "美团门店ID": ["美团门店ID", "美团门店id", "美团店铺ID", "美团店铺id"],
+}
+MT_STORE_COLUMNS = {
+    "日期": ["date", "date_id", "统计日期"],
+    "门店id": ["门店id", "门店ID", "平台门店ID", "门店编号"],
+    "营业收入": ["营业收入", "销售额", "营业额"],
+    "平台服务费(含佣金和配送服务费)": ["平台服务费(含佣金和配送服务费)", "平台服务费", "佣金和配送服务费"],
+    "有效订单": ["有效订单", "订单数"],
+    "曝光人数": ["曝光人数"],
+    "入店人数": ["入店人数", "进店人数"],
+    "下单人数": ["下单人数"],
+    "曝光次数": ["曝光次数"],
+    "曝光提升数(次)": ["曝光提升数(次)", "曝光提升数"],
+    "优惠前总额": ["优惠前总额"],
+    "商家活动支出": ["商家活动支出", "商家活动成本"],
+    "顾客实付": ["顾客实付", "顾客实付总额"],
+    "平台活动补贴": ["平台活动补贴"],
+    "综合体验分": ["综合体验分", "门店评分", "店铺评分"],
+}
+ELE_STORE_COLUMNS = {
+    "日期": ["date", "date_id", "统计日期"],
+    "门店编号": ["门店编号", "门店ID", "门店id", "平台门店ID"],
+    "收入": ["收入", "营业收入", "销售额"],
+    "平台技术服务费": ["平台技术服务费"],
+    "履约技术服务费": ["履约技术服务费"],
+    "有效订单": ["有效订单", "订单数"],
+    "曝光人数": ["曝光人数"],
+    "进店人数": ["进店人数", "入店人数"],
+    "下单人数": ["下单人数"],
+    "曝光次数": ["曝光次数"],
+    "曝光提升数": ["曝光提升数", "曝光提升数(次)"],
+    "营业额": ["营业额", "优惠前总额"],
+    "商家活动成本（含满减活动）": ["商家活动成本（含满减活动）", "商家活动成本", "商家活动支出"],
+    "顾客实付总额": ["顾客实付总额", "顾客实付"],
+    "饿了么补贴": ["饿了么补贴"],
+    "代理商补贴": ["代理商补贴"],
+    "店铺评分": ["店铺评分", "门店评分", "综合体验分"],
+}
+PROMO_COMMON_COLUMNS = {
+    "日期": ["date", "date_id", "统计日期"],
+    "门店ID": ["门店ID", "门店id", "门店编号", "平台门店ID"],
+    "推广产品": ["推广产品"],
+    "计划名称": ["计划名称", "推广计划名称"],
+    "营销场景": ["营销场景"],
+}
+MT_PROMO_COLUMNS = {
+    **PROMO_COMMON_COLUMNS,
+    "推广消费实付(元)": ["推广消费实付(元)", "推广消费实付", "推广消费", "花费"],
+    "曝光提升数(次)": ["曝光提升数(次)", "曝光提升数"],
+    "访问提升数(次)": ["访问提升数(次)", "访问提升数", "进店提升数"],
+}
+ELE_PROMO_COLUMNS = {
+    **PROMO_COMMON_COLUMNS,
+    "推广现金消费(元)": ["推广现金消费(元)", "推广现金消费", "推广消费", "花费"],
+    "曝光提升数": ["曝光提升数", "曝光提升数(次)"],
+    "进店提升数": ["进店提升数", "访问提升数", "访问提升数(次)"],
+}
+ORDER_COMMON_COLUMNS = {
+    "日期": ["date", "date_id", "下单日期"],
+    "美团门店ID": ["美团门店ID", "美团门店id"],
+    "饿了么门店ID": ["饿了么门店ID", "饿了么门店id"],
+    "门店id": ["门店id", "门店ID"],
+    "门店ID": ["门店ID", "门店id"],
+    "平台门店ID": ["平台门店ID"],
+    "门店编号": ["门店编号"],
+    "店号": ["店号", "门店编码", "门店代码"],
+    "门店名称": ["门店名称", "店铺名称"],
+    "订单状态": ["订单状态", "状态"],
+    "是否预订单": ["是否预订单", "预订单"],
+    "接单时间": ["接单时间"],
+    "完成时间": ["完成时间", "送达时间"],
+}
+MT_ORDER_COLUMNS = {
+    **ORDER_COMMON_COLUMNS,
+    "订单实付": ["订单实付", "用户实付"],
+}
+ELE_ORDER_COLUMNS = {
+    **ORDER_COMMON_COLUMNS,
+    "顾客实付": ["顾客实付", "用户实付"],
+}
+DISTANCE_COLUMNS = {
+    "平台门店ID": ["平台门店ID", "门店ID", "门店编号"],
+    "平台": ["平台", "外卖平台"],
+    "[0,0.5Km)": ["[0,0.5Km)", "[0,0.5km)"],
+    "[0.5,0.8Km)": ["[0.5,0.8Km)", "[0.5,0.8km)"],
+    "[0.8,1.0Km)": ["[0.8,1.0Km)", "[0.8,1.0km)"],
+    "[1.0,2.0Km)": ["[1.0,2.0Km)", "[1.0,2.0km)"],
+    "[2.0,3.0Km)": ["[2.0,3.0Km)", "[2.0,3.0km)"],
+    "[3.0,4.0Km)": ["[3.0,4.0Km)", "[3.0,4.0km)"],
+    "[4.0,5.0Km)": ["[4.0,5.0Km)", "[4.0,5.0km)"],
+    ">5.0Km": [">5.0Km", ">5.0km"],
+}
+REVIEW_COUNT_COLUMNS = {
+    "平台门店ID": ["平台门店ID", "门店ID", "门店编号"],
+    "外卖平台": ["外卖平台", "平台"],
+    "好评数": ["好评数"],
+    "中差评数": ["中差评数", "差评数"],
+}
+REVIEW_SOURCE_COLUMNS = {
+    "外卖通门店名称": ["外卖通门店名称", "门店名称", "店铺名称", "店名"],
+}
+DELIVERY_COLUMNS = {
+    "平台门店ID": ["平台门店ID", "门店ID", "门店编号"],
+    "平均配送时长": ["平均配送时长", "平均配送时长(分钟)", "平均配送时长（分钟）"],
+}
+
+
+def rename_columns_by_alias(
+    df: pd.DataFrame,
+    aliases_by_target: dict[str, list[str]],
+    *,
+    source_name: str,
+    required: list[str] | None = None,
+) -> pd.DataFrame:
+    df = df.copy()
+    normalized_columns: dict[str, Any] = {}
+    for col in df.columns:
+        normalized_columns.setdefault(norm_header(col), col)
+
+    rename_map: dict[Any, str] = {}
+    for target, aliases in aliases_by_target.items():
+        if target in df.columns:
+            continue
+        for alias in [target, *aliases]:
+            col = normalized_columns.get(norm_header(alias))
+            if col is not None and col not in rename_map:
+                rename_map[col] = target
+                break
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    missing = [col for col in required or [] if col not in df.columns]
+    if missing:
+        actual = ", ".join(cell_text(col) for col in df.columns[:40]) or "未识别到表头"
+        raise KeyError(f"{source_name} 缺少必要表头：{', '.join(missing)}；实际识别到：{actual}")
+    return df
 
 
 def normalize_numeric_column(df: pd.DataFrame, target: str, aliases: list[str], source_name: str) -> pd.DataFrame:
@@ -904,7 +1053,8 @@ def normalize_numeric_column(df: pd.DataFrame, target: str, aliases: list[str], 
             df[target] = to_num(df[col])
             return df
 
-    raise KeyError(f"{source_name} 缺少必要表头：{' / '.join(aliases)}")
+    actual = ", ".join(cell_text(col) for col in df.columns[:40]) or "未识别到表头"
+    raise KeyError(f"{source_name} 缺少必要表头：{' / '.join(aliases)}；实际识别到：{actual}")
 
 
 def ora_daily_scope(value: Any) -> str | None:
@@ -934,7 +1084,7 @@ def ora_store_lookup_maps(
 
 
 def load_ora_daily_table() -> pd.DataFrame:
-    return read_excel_columns("Ora外送日报.xlsx", ORA_DAILY_COLUMNS)
+    return read_excel_columns("Ora外送日报.xlsx", ORA_DAILY_COLUMNS, optional_columns=ORA_DAILY_OPTIONAL_COLUMNS)
 
 
 def compute_ora_daily_operating(
@@ -946,7 +1096,7 @@ def compute_ora_daily_operating(
         df = load_ora_daily_table()
         df = period_rows(df, "date_id", START, END)
     except KeyError:
-        df = read_excel_columns("Ora外送日报.xlsx", ORA_DAILY_VALUE_COLUMNS)
+        df = read_excel_columns("Ora外送日报.xlsx", ORA_DAILY_VALUE_COLUMNS, optional_columns=ORA_DAILY_OPTIONAL_COLUMNS)
     code_map, name_map = ora_store_lookup_maps(stores, mt_to_code, ele_to_code)
 
     result: dict[str, dict[str, dict[str, float]]] = defaultdict(
@@ -1387,7 +1537,12 @@ def promotion_raw_metrics_for_period(
         )
         return total
 
-    mt_store = period_rows(read_excel("美团门店数据.xlsx"), "日期", start, end)
+    mt_store = period_rows(
+        rename_columns_by_alias(read_excel("美团门店数据.xlsx"), MT_STORE_COLUMNS, source_name="美团门店数据.xlsx", required=["日期", "门店id"]),
+        "日期",
+        start,
+        end,
+    )
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
     mt_store["code"] = mt_store["_id"].map(mt_to_code)
     mt_store = mt_store[mt_store["code"].notna()].copy()
@@ -1395,7 +1550,12 @@ def promotion_raw_metrics_for_period(
     mt_paid_exp_from_store = "曝光提升数(次)" in mt_store.columns
     mt_ag = sum_by_store(mt_store, "code", ["曝光次数", "曝光提升数(次)"])
 
-    ele_store = period_rows(read_excel("饿了么门店数据.xlsx"), "日期", start, end)
+    ele_store = period_rows(
+        rename_columns_by_alias(read_excel("饿了么门店数据.xlsx"), ELE_STORE_COLUMNS, source_name="饿了么门店数据.xlsx", required=["日期", "门店编号"]),
+        "日期",
+        start,
+        end,
+    )
     ele_store["_id"] = ele_store["门店编号"].map(norm_id)
     ele_store["code"] = ele_store["_id"].map(ele_to_code)
     ele_store = ele_store[ele_store["code"].notna()].copy()
@@ -1403,11 +1563,35 @@ def promotion_raw_metrics_for_period(
     ele_paid_exp_from_store = "曝光提升数" in ele_store.columns
     ele_ag = sum_by_store(ele_store, "code", ["曝光次数", "曝光提升数"])
 
-    mt_promo = clean_mt_promo(period_rows(read_excel("美团推广.xlsx", sheet_name="效果数据"), "日期", start, end))
+    mt_promo = clean_mt_promo(
+        period_rows(
+            rename_columns_by_alias(
+                read_excel("美团推广.xlsx", sheet_name="效果数据"),
+                MT_PROMO_COLUMNS,
+                source_name="美团推广.xlsx",
+                required=["日期", "门店ID"],
+            ),
+            "日期",
+            start,
+            end,
+        )
+    )
     mt_promo_has_period_rows = not mt_promo.empty
     mt_pr = sum_by_store(mt_promo, "code", ["推广消费实付(元)", "曝光提升数(次)", "访问提升数(次)", "推广营业额", "推广订单数"])
 
-    ele_promo = clean_ele_promo(period_rows(read_excel("饿了么推广.xlsx"), "日期", start, end))
+    ele_promo = clean_ele_promo(
+        period_rows(
+            rename_columns_by_alias(
+                read_excel("饿了么推广.xlsx"),
+                ELE_PROMO_COLUMNS,
+                source_name="饿了么推广.xlsx",
+                required=["日期", "门店ID"],
+            ),
+            "日期",
+            start,
+            end,
+        )
+    )
     ele_promo_has_period_rows = not ele_promo.empty
     ele_pr = sum_by_store(ele_promo, "code", ["推广现金消费(元)", "曝光提升数", "进店提升数", "推广营业额", "推广订单数"])
 
@@ -1447,12 +1631,18 @@ def promotion_raw_metrics_for_period(
 
 
 def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    mt_store = current_rows(read_excel("美团门店数据.xlsx"), "日期")
+    mt_store = current_rows(
+        rename_columns_by_alias(read_excel("美团门店数据.xlsx"), MT_STORE_COLUMNS, source_name="美团门店数据.xlsx", required=["日期", "门店id"]),
+        "日期",
+    )
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
     mt_store["code"] = mt_store["_id"].map(mt_to_code)
     mt_store = mt_store[mt_store["code"].notna()].copy()
 
-    ele_store = current_rows(read_excel("饿了么门店数据.xlsx"), "日期")
+    ele_store = current_rows(
+        rename_columns_by_alias(read_excel("饿了么门店数据.xlsx"), ELE_STORE_COLUMNS, source_name="饿了么门店数据.xlsx", required=["日期", "门店编号"]),
+        "日期",
+    )
     ele_store["_id"] = ele_store["门店编号"].map(norm_id)
     ele_store["code"] = ele_store["_id"].map(ele_to_code)
     ele_store = ele_store[ele_store["code"].notna()].copy()
@@ -1495,7 +1685,15 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     for code, group in ele_store.sort_values("_date").groupby("code"):
         ele_score[code] = float(to_num(group.tail(1)["店铺评分"]).iloc[0])
 
-    mt_promo = current_rows(read_excel("美团推广.xlsx", sheet_name="效果数据"), "日期")
+    mt_promo = current_rows(
+        rename_columns_by_alias(
+            read_excel("美团推广.xlsx", sheet_name="效果数据"),
+            MT_PROMO_COLUMNS,
+            source_name="美团推广.xlsx",
+            required=["日期", "门店ID"],
+        ),
+        "日期",
+    )
     mt_promo["_id"] = mt_promo["门店ID"].map(norm_id)
     mt_promo["code"] = mt_promo["_id"].map(mt_to_code)
     mt_exclude = ["津贴联盟", "赏金联盟", "流量助手", "金字招牌", "袋鼠店长", "品牌装修", "应用市场", "短信通", "拼好饭"]
@@ -1514,7 +1712,10 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ["推广消费实付(元)", "曝光提升数(次)", "访问提升数(次)", "推广营业额", "推广订单数"],
     )
 
-    ele_promo = current_rows(read_excel("饿了么推广.xlsx"), "日期")
+    ele_promo = current_rows(
+        rename_columns_by_alias(read_excel("饿了么推广.xlsx"), ELE_PROMO_COLUMNS, source_name="饿了么推广.xlsx", required=["日期", "门店ID"]),
+        "日期",
+    )
     ele_promo["_id"] = ele_promo["门店ID"].map(norm_id)
     ele_promo["code"] = ele_promo["_id"].map(ele_to_code)
     text_cols = [c for c in ["推广产品", "计划名称"] if c in ele_promo.columns]
@@ -1535,7 +1736,12 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     ora_operating = compute_ora_daily_operating(stores, mt_to_code, ele_to_code)
     ora_open_dates = compute_ora_first_order_dates(stores, mt_to_code, ele_to_code)
 
-    praise = read_excel("好评数中差评数据.xlsx")
+    praise = rename_columns_by_alias(
+        read_excel("好评数中差评数据.xlsx"),
+        REVIEW_COUNT_COLUMNS,
+        source_name="好评数中差评数据.xlsx",
+        required=["平台门店ID", "外卖平台", "好评数", "中差评数"],
+    )
     praise["_id"] = praise["平台门店ID"].map(norm_id)
     praise["code_mt"] = praise["_id"].map(mt_to_code)
     praise["code_ele"] = praise["_id"].map(ele_to_code)
@@ -1793,7 +1999,12 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
 
 
 def compute_distance(mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> dict[str, dict[str, dict[str, float]]]:
-    df = read_excel("ora_订单距离分布_2026-06-22.xlsx", sheet_name="订单分布")
+    df = rename_columns_by_alias(
+        read_excel("ora_订单距离分布_2026-06-22.xlsx", sheet_name="订单分布"),
+        DISTANCE_COLUMNS,
+        source_name="ora_订单距离分布_2026-06-22.xlsx",
+        required=["平台门店ID", "平台"],
+    )
     df["_id"] = df["平台门店ID"].map(norm_id)
     result: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: {"mt": {}, "ele": {}, "total": {}})
     for _, row in df.iterrows():
@@ -1876,7 +2087,10 @@ def compute_paid_intervals(mt_to_code: dict[str, str], ele_to_code: dict[str, st
         return code
 
     def prepare_orders(fname: str, platform: str) -> pd.DataFrame:
-        df = current_rows(read_excel(fname), "日期")
+        df = current_rows(
+            rename_columns_by_alias(read_excel(fname), MT_ORDER_COLUMNS if platform == "mt" else ELE_ORDER_COLUMNS, source_name=fname, required=["日期"]),
+            "日期",
+        )
         df["code"] = assign_codes(df, platform)
         if "订单状态" in df.columns:
             if platform == "mt":
@@ -2179,7 +2393,12 @@ def compute_complaints() -> tuple[dict[str, float], list[dict[str, Any]]]:
         if cat in current_counts:
             current_counts[cat] += float(pd.to_numeric(stat, errors="coerce") or 0)
 
-    data = read_excel("ora_评价汇总_2026-06-15~2026-06-21.xlsx", sheet_name="数据源")
+    data = rename_columns_by_alias(
+        read_excel("ora_评价汇总_2026-06-15~2026-06-21.xlsx", sheet_name="数据源"),
+        REVIEW_SOURCE_COLUMNS,
+        source_name="ora_评价汇总_2026-06-15~2026-06-21.xlsx 数据源",
+        required=["外卖通门店名称"],
+    )
     for col in categories:
         if col not in data:
             data[col] = 0
@@ -2193,12 +2412,20 @@ def compute_complaints() -> tuple[dict[str, float], list[dict[str, Any]]]:
 
 
 def compute_delivery(mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> tuple[dict[str, float], dict[str, float]]:
-    mt = read_excel("美团平均配送时长ora_自定义报表_2026-06-15_2026-06-21.xlsx")
+    mt = rename_columns_by_alias(
+        read_excel("美团平均配送时长ora_自定义报表_2026-06-15_2026-06-21.xlsx"),
+        DELIVERY_COLUMNS,
+        source_name="美团平均配送时长ora_自定义报表_2026-06-15_2026-06-21.xlsx",
+        required=["平台门店ID", "平均配送时长"],
+    )
     mt["_id"] = mt["平台门店ID"].map(norm_id)
     mt["code"] = mt["_id"].map(mt_to_code)
     mt_delivery = {str(code): float(to_num(group["平均配送时长"]).mean()) for code, group in mt[mt["code"].notna()].groupby("code")}
 
-    ele = current_rows(read_excel("饿了么订单数据.xlsx"), "日期")
+    ele = current_rows(
+        rename_columns_by_alias(read_excel("饿了么订单数据.xlsx"), ELE_ORDER_COLUMNS, source_name="饿了么订单数据.xlsx", required=["日期", "门店编号"]),
+        "日期",
+    )
     ele["_id"] = ele["门店编号"].map(norm_id)
     ele["code"] = ele["_id"].map(ele_to_code)
     ele = ele[ele["code"].notna()].copy()
