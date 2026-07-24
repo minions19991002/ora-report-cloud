@@ -4067,12 +4067,6 @@ def write_promotion_comparison_sheet_reference(
         if not using_template_sheet:
             return False
 
-        store_lookup: dict[str, Store] = {}
-        for store in stores:
-            for key in (norm_store_name(store.name), norm_store_name(store.name_full)):
-                if key:
-                    store_lookup[key] = store
-
         def find_template_block(keyword: str) -> dict[str, int] | None:
             title_row = None
             for row in range(1, (ws.max_row or 1) + 1):
@@ -4144,24 +4138,13 @@ def write_promotion_comparison_sheet_reference(
             write_template_value(block["period_row"], 11, previous_label)
             write_template_value(block["period_row"], 20, "环比")
 
-            used_codes: set[str] = set()
-            next_store_idx = 0
-            data_rows = range(block["data_start"], block["total_row"])
-            for row in data_rows:
-                label_key = norm_store_name(ws.cell(row, 1).value)
-                store = store_lookup.get(label_key)
-                if store and store.code in used_codes:
-                    store = None
-                if store is None:
-                    while next_store_idx < len(stores) and stores[next_store_idx].code in used_codes:
-                        next_store_idx += 1
-                    store = stores[next_store_idx] if next_store_idx < len(stores) else None
+            for offset, row in enumerate(range(block["data_start"], block["total_row"])):
+                store = stores[offset] if offset < len(stores) else None
                 if store is None:
                     for col in range(1, 29):
                         ws.cell(row, col).value = None
                     continue
 
-                used_codes.add(store.code)
                 write_template_value(row, 1, store.name)
                 cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}))
                 prev_values = previous_values(store, scope)
@@ -4378,6 +4361,13 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
         "delivery_ele_first": wb_formula["用户体验-配送"]["O3"].value,
     }
     validation["new_packages"] = new_packages
+    if PROMO_COMPARISON_SHEET in wb_formula.sheetnames:
+        promo_ws = wb_formula[PROMO_COMPARISON_SHEET]
+        expected_names = [store.name for store in stores]
+        validation["promotion_store_order_head"] = {
+            "expected": expected_names[:5],
+            "actual": [promo_ws.cell(row, 1).value for row in range(4, min(4 + len(expected_names), 9))],
+        }
     validation["paid_audit"] = paid_audit
     wb_formula.close()
     return validation
