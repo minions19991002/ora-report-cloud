@@ -93,13 +93,22 @@ def read_excel(name: str, **kwargs) -> pd.DataFrame:
     return _copy_excel_data(_EXCEL_CACHE[key])
 
 
-def read_excel_columns(name: str, columns: dict[str, list[str]], sheet_name: str | int = 0, header_rows: int = 30) -> pd.DataFrame:
-    """Read only selected columns from an xlsx sheet by matching header text."""
+def read_excel_columns(
+    name: str,
+    columns: dict[str, list[str]],
+    sheet_name: str | int = 0,
+    header_rows: int = 30,
+    optional_columns: dict[str, list[str]] | None = None,
+) -> pd.DataFrame:
+    """Read selected columns from an xlsx sheet by matching business header text."""
+    optional_columns = optional_columns or {}
+    all_columns = {**columns, **optional_columns}
     key = _excel_cache_key(
         f"columns:{name}",
         {
             "sheet_name": sheet_name,
             "columns": tuple((target, tuple(aliases)) for target, aliases in columns.items()),
+            "optional_columns": tuple((target, tuple(aliases)) for target, aliases in optional_columns.items()),
         },
     )
     if key in _EXCEL_CACHE:
@@ -112,8 +121,10 @@ def read_excel_columns(name: str, columns: dict[str, list[str]], sheet_name: str
         selected: dict[str, int] = {}
         normalized_aliases = {
             target: [norm_header(alias) for alias in aliases]
-            for target, aliases in columns.items()
+            for target, aliases in all_columns.items()
         }
+        best_candidate: dict[str, int] = {}
+        best_headers: list[str] = []
         for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=header_rows, values_only=True), start=1):
             header_map = {
                 norm_header(value): idx
@@ -126,13 +137,17 @@ def read_excel_columns(name: str, columns: dict[str, list[str]], sheet_name: str
                     if alias in header_map:
                         candidate[target] = header_map[alias]
                         break
-            if len(candidate) == len(columns):
+            if len(candidate) > len(best_candidate):
+                best_candidate = candidate
+                best_headers = [cell_text(value) for value in row if cell_text(value)]
+            if all(target in candidate for target in columns):
                 header_row = row_idx
                 selected = candidate
                 break
         if header_row is None:
-            missing = ", ".join(columns)
-            raise KeyError(f"{name} 缺少必要表头：{missing}")
+            missing = ", ".join(target for target in columns if target not in best_candidate)
+            actual = ", ".join(best_headers[:40]) or "未识别到表头"
+            raise KeyError(f"{name} 缺少必要表头：{missing}；实际识别到：{actual}")
 
         rows: list[dict[str, Any]] = []
         min_idx = min(selected.values())
@@ -157,7 +172,7 @@ def read_excel_columns(name: str, columns: dict[str, list[str]], sheet_name: str
     finally:
         wb.close()
 
-    result = pd.DataFrame(rows, columns=list(columns))
+    result = pd.DataFrame(rows, columns=[target for target in all_columns if target in selected])
     _EXCEL_CACHE[key] = result
     return result.copy()
 
@@ -2050,10 +2065,12 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
                     "商品名称": ["商品名称", "商品名"],
                     "销量": ["销量", "商品销量"],
                     "销售额": ["销售额", "商品销售额"],
+                },
+                sheet_name="data",
+                optional_columns={
                     "是否套餐": ["是否套餐"],
                     "是否配料": ["是否配料"],
                 },
-                sheet_name="data",
             ),
             "日期",
             start,
@@ -2392,7 +2409,9 @@ ANALYSIS_SECTION_FALLBACKS = {
 
 
 def norm_header(value: Any) -> str:
-    text = cell_text(value).replace("_", "")
+    text = cell_text(value)
+    text = re.sub(r"[\u200b-\u200f\ufeff]", "", text)
+    text = text.replace("_", "")
     text = re.sub(r"\s+", "", text)
     return text.lower()
 
