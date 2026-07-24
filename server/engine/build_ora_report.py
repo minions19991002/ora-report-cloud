@@ -4122,12 +4122,15 @@ def write_promotion_comparison_sheet_reference(
             if number_format:
                 cell.number_format = number_format
 
-        def write_template_formula(row: int, col: int, formula: str, number_format: str | None = None) -> None:
+        def write_template_formula(row: int, col: int, formula: str, number_format: str | None = None, *, force: bool = False) -> None:
             cell = ws.cell(row, col)
-            if not (isinstance(cell.value, str) and cell.value.startswith("=")):
+            if force or not (isinstance(cell.value, str) and cell.value.startswith("=")):
                 cell.value = formula
             if number_format:
                 cell.number_format = number_format
+
+        def write_total_formula(row: int, col: int, formula: str, number_format: str | None = None) -> None:
+            write_template_formula(row, col, formula, number_format, force=True)
 
         def fill_block(keyword: str, scope: str) -> bool:
             block = find_template_block(keyword)
@@ -4172,15 +4175,27 @@ def write_promotion_comparison_sheet_reference(
                 cur_col = 2 + idx
                 prev_col = 11 + idx
                 comp_col = 20 + idx
-                write_template_value(total_row, cur_col, total_values.get(key), number_format)
-                write_template_value(total_row, prev_col, prev_total_values.get(key), number_format)
+                data_first = block["data_start"]
+                data_last = total_row - 1
+                if data_last >= data_first and key in {"ad_spend", "ad_orig", "ad_orders", "exp_count", "paid_exp", "natural_exp"}:
+                    write_total_formula(total_row, cur_col, f"=SUM({ws.cell(data_first, cur_col).coordinate}:{ws.cell(data_last, cur_col).coordinate})", number_format)
+                    write_total_formula(total_row, prev_col, f"=SUM({ws.cell(data_first, prev_col).coordinate}:{ws.cell(data_last, prev_col).coordinate})", number_format)
+                elif key == "ad_roi":
+                    write_total_formula(total_row, cur_col, f"=IFERROR({ws.cell(total_row, 3).coordinate}/{ws.cell(total_row, 2).coordinate},0)", number_format)
+                    write_total_formula(total_row, prev_col, f"=IFERROR({ws.cell(total_row, 12).coordinate}/{ws.cell(total_row, 11).coordinate},0)", number_format)
+                elif key == "ad_share":
+                    write_total_formula(total_row, cur_col, f"=IFERROR({ws.cell(total_row, 9).coordinate}/{ws.cell(total_row, 7).coordinate},0)", number_format)
+                    write_total_formula(total_row, prev_col, f"=IFERROR({ws.cell(total_row, 18).coordinate}/{ws.cell(total_row, 16).coordinate},0)", number_format)
+                else:
+                    write_template_value(total_row, cur_col, total_values.get(key), number_format)
+                    write_template_value(total_row, prev_col, prev_total_values.get(key), number_format)
                 if mode == "growth":
                     formula = f"=IFERROR({ws.cell(total_row, cur_col).coordinate}/{ws.cell(total_row, prev_col).coordinate}-1,0)"
                     formula_format = "0.0%"
                 else:
                     formula = f"={ws.cell(total_row, cur_col).coordinate}-{ws.cell(total_row, prev_col).coordinate}"
                     formula_format = number_format
-                write_template_formula(total_row, comp_col, formula, formula_format)
+                write_total_formula(total_row, comp_col, formula, formula_format)
             return True
 
         ok = fill_block("美团", "mt") and fill_block("饿了么", "ele")
