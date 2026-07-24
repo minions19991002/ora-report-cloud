@@ -117,6 +117,8 @@ def read_excel_columns(
     wb = load_workbook(BASE / name, read_only=True, data_only=True)
     try:
         ws = wb[sheet_name] if isinstance(sheet_name, str) else wb.worksheets[int(sheet_name)]
+        if hasattr(ws, "reset_dimensions"):
+            ws.reset_dimensions()
         header_row: int | None = None
         selected: dict[str, int] = {}
         normalized_aliases = {
