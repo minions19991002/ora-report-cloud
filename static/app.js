@@ -52,7 +52,7 @@ const HEADER_SIGNATURES = {
 };
 
 const XLSX_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-const UPLOAD_CONCURRENCY = 5;
+const UPLOAD_CONCURRENCY = 2;
 
 const filesByKey = new Map();
 const grid = document.querySelector("#fileGrid");
@@ -453,7 +453,7 @@ async function uploadFileToSession(uploadId, item, completed, total) {
 }
 
 async function uploadFileToSessionWithRetry(uploadId, item, completed, total) {
-  const maxAttempts = 3;
+  const maxAttempts = 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       await uploadFileToSession(uploadId, item, completed, total);
@@ -462,7 +462,7 @@ async function uploadFileToSessionWithRetry(uploadId, item, completed, total) {
       if (attempt === maxAttempts) {
         throw new Error(`${item.title} 上传失败：${error?.message || String(error)}`);
       }
-      const delaySeconds = attempt * 3;
+      const delaySeconds = attempt * 5;
       log(`${item.title} 上传中断，${delaySeconds} 秒后重试（${attempt + 1}/${maxAttempts}）`);
       await new Promise((resolve) => window.setTimeout(resolve, delaySeconds * 1000));
     }
@@ -548,7 +548,7 @@ async function generateReport() {
     statusText.textContent = "生成失败";
     const message = error?.message || String(error);
     if (/Failed to fetch/i.test(message)) {
-      log("无法连接服务器：请确认本地启动窗口或云端服务仍在运行，然后刷新页面重试。");
+      log("无法连接服务器：云端服务当前可用，但本次上传连接被浏览器或网络中断。请刷新页面后重试；如果在公司网络/代理环境下仍失败，换一个网络或让文件上传者直接在本机操作。");
     } else {
       log(message);
     }
