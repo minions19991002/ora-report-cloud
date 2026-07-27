@@ -1085,6 +1085,34 @@ def ora_store_lookup_maps(
     return code_map, name_map
 
 
+def assign_store_codes_from_source(
+    df: pd.DataFrame,
+    stores: list[Store],
+    primary_id_map: dict[str, str],
+    fallback_id_map: dict[str, str],
+    *,
+    id_col: str = "_id",
+    name_cols: list[str] | None = None,
+) -> pd.Series:
+    code = df[id_col].map(primary_id_map) if id_col in df.columns else pd.Series([None] * len(df), index=df.index, dtype="object")
+    if id_col in df.columns:
+        fallback = df[id_col].map(fallback_id_map)
+        code = code.where(code.notna(), fallback)
+
+    name_map: dict[str, str] = {}
+    for store in stores:
+        for name in (store.name, store.name_full):
+            key = norm_store_name(name)
+            if key:
+                name_map.setdefault(key, store.code)
+    for col in name_cols or []:
+        if col not in df.columns:
+            continue
+        matched = df[col].map(lambda value: name_map.get(norm_store_name(value)))
+        code = code.where(code.notna(), matched)
+    return code
+
+
 def load_ora_daily_table() -> pd.DataFrame:
     return read_excel_columns("Ora外送日报.xlsx", ORA_DAILY_COLUMNS, optional_columns=ORA_DAILY_OPTIONAL_COLUMNS)
 
@@ -1449,7 +1477,7 @@ def promotion_raw_metrics_for_period(
     def clean_mt_promo(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df["_id"] = df["门店ID"].map(norm_id)
-        df["code"] = df["_id"].map(mt_to_code)
+        df["code"] = assign_store_codes_from_source(df, stores, mt_to_code, ele_to_code, name_cols=["门店名称", "店铺名称"])
         mt_exclude = ["津贴联盟", "赏金联盟", "流量助手", "金字招牌", "袋鼠店长", "品牌装修", "应用市场", "短信通", "拼好饭"]
         text_cols = [c for c in ["推广产品", "计划名称", "营销场景"] if c in df.columns]
         if text_cols:
@@ -1465,7 +1493,7 @@ def promotion_raw_metrics_for_period(
     def clean_ele_promo(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df["_id"] = df["门店ID"].map(norm_id)
-        df["code"] = df["_id"].map(ele_to_code)
+        df["code"] = assign_store_codes_from_source(df, stores, ele_to_code, mt_to_code, name_cols=["门店名称", "店铺名称"])
         text_cols = [c for c in ["推广产品", "计划名称"] if c in df.columns]
         if text_cols:
             mask = pd.Series(False, index=df.index)
@@ -1697,7 +1725,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         "日期",
     )
     mt_promo["_id"] = mt_promo["门店ID"].map(norm_id)
-    mt_promo["code"] = mt_promo["_id"].map(mt_to_code)
+    mt_promo["code"] = assign_store_codes_from_source(mt_promo, stores, mt_to_code, ele_to_code, name_cols=["门店名称", "店铺名称"])
     mt_exclude = ["津贴联盟", "赏金联盟", "流量助手", "金字招牌", "袋鼠店长", "品牌装修", "应用市场", "短信通", "拼好饭"]
     text_cols = [c for c in ["推广产品", "计划名称", "营销场景"] if c in mt_promo.columns]
     if text_cols:
@@ -1719,7 +1747,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         "日期",
     )
     ele_promo["_id"] = ele_promo["门店ID"].map(norm_id)
-    ele_promo["code"] = ele_promo["_id"].map(ele_to_code)
+    ele_promo["code"] = assign_store_codes_from_source(ele_promo, stores, ele_to_code, mt_to_code, name_cols=["门店名称", "店铺名称"])
     text_cols = [c for c in ["推广产品", "计划名称"] if c in ele_promo.columns]
     if text_cols:
         mask = pd.Series(False, index=ele_promo.index)
