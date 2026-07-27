@@ -1150,6 +1150,39 @@ def compute_ora_daily_operating(
     return {code: dict(scopes) for code, scopes in result.items()}
 
 
+def compute_ora_business_days(
+    stores: list[Store],
+    mt_to_code: dict[str, str],
+    ele_to_code: dict[str, str],
+) -> dict[str, int]:
+    try:
+        df = load_ora_daily_table()
+    except KeyError:
+        return {}
+    df = period_rows(df, "date_id", START, END)
+    if df.empty:
+        return {}
+
+    code_map, name_map = ora_store_lookup_maps(stores, mt_to_code, ele_to_code)
+    daily_orders: dict[tuple[str, date], float] = defaultdict(float)
+    for _, row in df.iterrows():
+        scope = ora_daily_scope(row.get("sales_channel"))
+        if scope not in {"mt", "ele"}:
+            continue
+        raw_id = cell_text(row.get("store_id"))
+        code = code_map.get(raw_id) or code_map.get(norm_id(raw_id)) or name_map.get(norm_store_name(raw_id))
+        row_date = row.get("_date")
+        if not code or pd.isna(row_date):
+            continue
+        daily_orders[(code, pd.Timestamp(row_date).date())] += scalar_num(row.get("order_count"))
+
+    biz_days = {s.code: 0 for s in stores}
+    for (code, _row_date), orders in daily_orders.items():
+        if orders > 0:
+            biz_days[code] = biz_days.get(code, 0) + 1
+    return biz_days
+
+
 def compute_ora_first_order_dates(
     stores: list[Store],
     mt_to_code: dict[str, str],
@@ -1764,6 +1797,12 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     )
 
     ora_operating = compute_ora_daily_operating(stores, mt_to_code, ele_to_code)
+    ora_biz_days = compute_ora_business_days(stores, mt_to_code, ele_to_code)
+    for store in stores:
+        ora_days = ora_biz_days.get(store.code, 0)
+        if ora_days > 0:
+            biz_days[store.code] = ora_days
+    total_biz_days = sum(biz_days.values())
     ora_open_dates = compute_ora_first_order_dates(stores, mt_to_code, ele_to_code)
 
     praise = rename_columns_by_alias(
