@@ -3894,21 +3894,33 @@ def write_promotion_comparison_sheet_reference(
     current_label = export_label(START, END)
     previous_label = export_label(PREV_START, PREV_END)
 
-    def metric_values(source: dict[str, Any] | None) -> dict[str, Any]:
+    def metric_values(source: dict[str, Any] | None, *, zero_fill: bool = False) -> dict[str, Any]:
         source = source or {}
+        zero = 0.0 if zero_fill else None
+        ad_spend = source.get("ad_spend", zero)
+        ad_orig = source.get("ad_orig", zero)
+        ad_orders = source.get("ad_orders", zero)
         exp_count = scalar_num(source.get("exp_count", 0.0))
         paid_exp = scalar_num(source.get("paid_exp", 0.0))
+        ad_roi = source.get("ad_roi", zero)
+        if ad_roi in (None, "") and zero_fill:
+            ad_roi = safe_div(ad_orig, ad_spend) or 0.0
         ad_bid = source.get("ad_bid")
         if ad_bid in (None, ""):
-            ad_bid = safe_div(source.get("ad_spend"), source.get("ad_visits"))
+            ad_bid = safe_div(ad_spend, source.get("ad_visits"))
+        if ad_bid in (None, "") and zero_fill:
+            ad_bid = 0.0
+        ad_share = source.get("ad_share", zero)
+        if ad_share in (None, "") and zero_fill:
+            ad_share = safe_div(paid_exp, exp_count) or 0.0
         return {
-            "ad_spend": source.get("ad_spend"),
-            "ad_orig": source.get("ad_orig"),
-            "ad_orders": source.get("ad_orders"),
-            "ad_roi": source.get("ad_roi"),
+            "ad_spend": ad_spend,
+            "ad_orig": ad_orig,
+            "ad_orders": ad_orders,
+            "ad_roi": ad_roi,
             "ad_bid": ad_bid,
             "exp_count": exp_count,
-            "ad_share": source.get("ad_share"),
+            "ad_share": ad_share,
             "paid_exp": paid_exp,
             "natural_exp": max(exp_count - paid_exp, 0.0),
         }
@@ -4149,7 +4161,7 @@ def write_promotion_comparison_sheet_reference(
                     continue
 
                 write_template_value(row, 1, store.name)
-                cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}))
+                cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}), zero_fill=True)
                 prev_values = previous_values(store, scope)
                 for idx, (key, _label, mode, number_format) in enumerate(fields):
                     cur_col = 2 + idx
@@ -4288,7 +4300,7 @@ def write_promotion_comparison_sheet_reference(
         for offset, store in enumerate(stores):
             row = data_start + offset
             set_cell(row, 1, store.name)
-            cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}))
+            cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}), zero_fill=True)
             prev_values = previous_values(store, scope)
             for idx, (key, _label, mode, number_format) in enumerate(fields):
                 cur_value = cur_values.get(key)
