@@ -1607,7 +1607,13 @@ def promotion_raw_metrics_for_period(
         end,
     )
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
-    mt_store["code"] = mt_store["_id"].map(mt_to_code)
+    mt_store["code"] = assign_store_codes_from_source(
+        mt_store,
+        stores,
+        mt_to_code,
+        ele_to_code,
+        name_cols=["门店名称", "店铺名称"],
+    )
     mt_store = mt_store[mt_store["code"].notna()].copy()
     mt_store_has_period_rows = not mt_store.empty
     mt_paid_exp_from_store = "曝光提升数(次)" in mt_store.columns
@@ -1620,7 +1626,13 @@ def promotion_raw_metrics_for_period(
         end,
     )
     ele_store["_id"] = ele_store["门店编号"].map(norm_id)
-    ele_store["code"] = ele_store["_id"].map(ele_to_code)
+    ele_store["code"] = assign_store_codes_from_source(
+        ele_store,
+        stores,
+        ele_to_code,
+        mt_to_code,
+        name_cols=["门店名称", "店铺名称"],
+    )
     ele_store = ele_store[ele_store["code"].notna()].copy()
     ele_store_has_period_rows = not ele_store.empty
     ele_paid_exp_from_store = "曝光提升数" in ele_store.columns
@@ -1699,7 +1711,13 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         "日期",
     )
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
-    mt_store["code"] = mt_store["_id"].map(mt_to_code)
+    mt_store["code"] = assign_store_codes_from_source(
+        mt_store,
+        stores,
+        mt_to_code,
+        ele_to_code,
+        name_cols=["门店名称", "店铺名称"],
+    )
     mt_store = mt_store[mt_store["code"].notna()].copy()
 
     ele_store = current_rows(
@@ -1707,7 +1725,13 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         "日期",
     )
     ele_store["_id"] = ele_store["门店编号"].map(norm_id)
-    ele_store["code"] = ele_store["_id"].map(ele_to_code)
+    ele_store["code"] = assign_store_codes_from_source(
+        ele_store,
+        stores,
+        ele_to_code,
+        mt_to_code,
+        name_cols=["门店名称", "店铺名称"],
+    )
     ele_store = ele_store[ele_store["code"].notna()].copy()
 
     days_orders: dict[tuple[str, pd.Timestamp], float] = defaultdict(float)
