@@ -20,6 +20,7 @@ from openpyxl.formatting.rule import CellIsRule
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.datetime import from_excel
 
 
 BASE = Path(os.environ.get("ORA_BASE", "/input"))
@@ -358,6 +359,25 @@ def clean_error_value(value: Any) -> Any:
 
 def get_prev(ws, row: int, col: int) -> Any:
     return ws.cell(row, col).value
+
+
+def parse_open_date_value(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        try:
+            return from_excel(value).date()
+        except Exception:
+            return None
+    text = str(value).strip()
+    if not text or text.startswith("#"):
+        return None
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return pd.Timestamp(parsed).date()
 
 
 SECTION_TITLES = ("营业数据", "流量数据", "推广数据", "门店评分", "业绩", "客单折扣")
@@ -2541,6 +2561,14 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
     operating_row_by_code, operating_row_by_name = section_store_row_maps(ws, "营业数据", 3, 18)
     prev_operating_by_code, prev_operating_by_name = section_store_row_maps(prev, "营业数据", 3, 18)
     operating_total_row = find_section_total_row(ws, "营业数据", 19)
+    prev_open_dates: dict[str, date] = {}
+    for store in stores:
+        prev_row = matched_row_by_store(store, prev_operating_by_code, prev_operating_by_name)
+        if not prev_row:
+            continue
+        prev_open_date = parse_open_date_value(prev.cell(prev_row, 1).value)
+        if prev_open_date:
+            prev_open_dates[store.code] = prev_open_date
 
     def prev_value(row: int | None, col: int) -> Any:
         return get_prev(prev, row, col) if row else None
@@ -2602,8 +2630,9 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
     for store in stores:
         row = matched_row_by_store(store, operating_row_by_code, operating_row_by_name)
         if row:
-            if not ws.cell(row, 1).value and metrics[store.code].get("open_date"):
-                write(ws.cell(row, 1), metrics[store.code]["open_date"])
+            open_date = prev_open_dates.get(store.code) or metrics[store.code].get("open_date")
+            if open_date:
+                write(ws.cell(row, 1), open_date)
                 ws.cell(row, 1).number_format = "yyyy/m/d"
             prev_row = matched_row_by_store(store, prev_operating_by_code, prev_operating_by_name)
             write_operating(row, metrics[store.code], prev_row)
