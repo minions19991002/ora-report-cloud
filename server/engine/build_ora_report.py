@@ -1583,6 +1583,7 @@ def promotion_raw_metrics_for_period(
             else source_value(promo_ag, code, paid_exp_col, promo_has_period_rows)
         )
         ad_spend = source_value(promo_ag, code, spend_col, promo_has_period_rows)
+        days = biz_days.get(code, 0)
         ad_visits = source_value(promo_ag, code, visit_col, promo_has_period_rows)
         ad_orig = source_value(promo_ag, code, "推广营业额", promo_has_period_rows)
         ad_orders = source_value(promo_ag, code, "推广订单数", promo_has_period_rows)
@@ -1594,6 +1595,8 @@ def promotion_raw_metrics_for_period(
             ad_bid = 0.0
         return {
             "ad_spend": ad_spend,
+            "avg_ad_spend": safe_div(ad_spend, days),
+            "business_days": days,
             "ad_orig": ad_orig,
             "ad_orders": ad_orders,
             "ad_roi": ad_roi,
@@ -1610,6 +1613,9 @@ def promotion_raw_metrics_for_period(
         for key in ["ad_spend", "ad_orig", "ad_orders", "ad_visits", "exp_count", "paid_exp"]:
             present = [float(row[key]) for row in rows if has_value(row.get(key))]
             total[key] = sum(present) if present else None
+        business_days = sum(int(row.get("business_days") or 0) for row in rows)
+        total["business_days"] = business_days
+        total["avg_ad_spend"] = safe_div(total.get("ad_spend"), business_days)
         total["ad_roi"] = safe_div(total.get("ad_orig"), total.get("ad_spend")) if has_value(total.get("ad_orig")) and has_value(total.get("ad_spend")) else None
         total["ad_bid"] = safe_div(total.get("ad_spend"), total.get("ad_visits")) if has_value(total.get("ad_spend")) and has_value(total.get("ad_visits")) else None
         total["ad_share"] = safe_div(total.get("paid_exp"), total.get("exp_count")) if has_value(total.get("paid_exp")) and has_value(total.get("exp_count")) else None
@@ -1657,6 +1663,16 @@ def promotion_raw_metrics_for_period(
     ele_store_has_period_rows = not ele_store.empty
     ele_paid_exp_from_store = "曝光提升数" in ele_store.columns
     ele_ag = sum_by_store(ele_store, "code", ["曝光次数", "曝光提升数"])
+
+    days_orders: dict[tuple[str, pd.Timestamp], float] = defaultdict(float)
+    for _, row in mt_store.iterrows():
+        days_orders[(row["code"], row["_date"].normalize())] += scalar_num(row.get("有效订单", 0))
+    for _, row in ele_store.iterrows():
+        days_orders[(row["code"], row["_date"].normalize())] += scalar_num(row.get("有效订单", 0))
+    biz_days = {s.code: 0 for s in stores}
+    for (code, _dt), orders in days_orders.items():
+        if orders > 0:
+            biz_days[code] = biz_days.get(code, 0) + 1
 
     mt_promo = clean_mt_promo(
         period_rows(
@@ -1965,6 +1981,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "paid_exp": total_paid_exp,
                 "ad_share": safe_div(total_paid_exp, total_exp_count),
                 "ad_spend": total_spend,
+                "avg_ad_spend": safe_div(total_spend, den),
                 "ad_visits": total_visit_lift,
                 "ad_roi": safe_div(total_ad_sales, total_spend),
                 "ad_orig": total_ad_sales,
@@ -1994,6 +2011,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "paid_exp": mt_paid_exp,
                 "ad_share": safe_div(mt_paid_exp, mt_exp_count),
                 "ad_spend": mt_spend,
+                "avg_ad_spend": safe_div(mt_spend, den),
                 "ad_visits": mt_visit_lift,
                 "ad_roi": safe_div(mt_ad_sales, mt_spend),
                 "ad_orig": mt_ad_sales,
@@ -2023,6 +2041,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "paid_exp": ele_paid_exp,
                 "ad_share": safe_div(ele_paid_exp, ele_exp_count),
                 "ad_spend": ele_spend,
+                "avg_ad_spend": safe_div(ele_spend, den),
                 "ad_visits": ele_visit_lift,
                 "ad_roi": safe_div(ele_ad_sales, ele_spend),
                 "ad_orig": ele_ad_sales,
@@ -2072,7 +2091,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal: dict[str, float] = defaultdict(float)
         for code in [s.code for s in stores]:
             for key, value in metrics[code][scope].items():
-                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "ad_share", "ad_roi", "ad_bid", "ad_activity", "ad_gmv_share", "score"}:
+                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "ad_share", "ad_roi", "ad_bid", "avg_ad_spend", "ad_activity", "ad_gmv_share", "score"}:
                     continue
                 if isinstance(value, (int, float)):
                     subtotal[key] += float(value)
@@ -2104,6 +2123,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal["ad_share"] = safe_div(subtotal["paid_exp"], subtotal["exp_count"])
         subtotal["ad_roi"] = safe_div(subtotal["ad_orig"], subtotal["ad_spend"])
         subtotal["ad_bid"] = safe_div(subtotal.get("ad_spend", 0.0), subtotal.get("ad_visits", 0.0))
+        subtotal["avg_ad_spend"] = safe_div(subtotal.get("ad_spend", 0.0), den)
         subtotal["ad_activity"] = safe_div(subtotal.get("ad_orders", 0.0), subtotal.get("orders", 0.0))
         ad_gmv_base = subtotal.get("ad_gmv_base", 0.0) if scope in {"total", "mt", "ele"} else subtotal.get("sales", 0.0)
         subtotal["ad_gmv_share"] = safe_div(subtotal["ad_orig"], ad_gmv_base)
@@ -4001,9 +4021,10 @@ def write_promotion_comparison_sheet_reference(
 
     fields = [
         ("ad_spend", "推广消耗", "growth", "#,##0_ "),
+        ("avg_ad_spend", "日均推广消耗", "growth", "#,##0_ "),
         ("ad_orig", "推广营业额", "growth", "#,##0_ "),
         ("ad_orders", "推广订单数", "growth", "#,##0_ "),
-        ("ad_roi", "营业额ROI", "diff", "0.0"),
+        ("ad_roi", "实付ROI", "diff", "0.0"),
         ("ad_bid", "出价", "diff", "0.0"),
         ("exp_count", "总曝光次数", "growth", "#,##0_ "),
         ("ad_share", "推广曝光占比", "diff", "0.0%"),
@@ -4018,6 +4039,7 @@ def write_promotion_comparison_sheet_reference(
         source = source or {}
         zero = 0.0 if zero_fill else None
         ad_spend = source.get("ad_spend", zero)
+        avg_ad_spend = source.get("avg_ad_spend", zero)
         ad_orig = source.get("ad_orig", zero)
         ad_orders = source.get("ad_orders", zero)
         exp_count = scalar_num(source.get("exp_count", 0.0))
@@ -4035,6 +4057,7 @@ def write_promotion_comparison_sheet_reference(
             ad_share = safe_div(paid_exp, exp_count) or 0.0
         return {
             "ad_spend": ad_spend,
+            "avg_ad_spend": avg_ad_spend,
             "ad_orig": ad_orig,
             "ad_orders": ad_orders,
             "ad_roi": ad_roi,
@@ -4061,7 +4084,10 @@ def write_promotion_comparison_sheet_reference(
         header_row = None
         if title_row:
             for row in range(title_row + 1, min(sheet.max_row or title_row + 1, title_row + 5) + 1):
-                if "推广消耗" in cell_text(sheet.cell(row, 2).value) and "推广营业额" in cell_text(sheet.cell(row, 3).value):
+                if "推广消耗" in cell_text(sheet.cell(row, 2).value) and (
+                    "推广营业额" in cell_text(sheet.cell(row, 3).value)
+                    or "推广营业额" in cell_text(sheet.cell(row, 4).value)
+                ):
                     header_row = row
                     break
         else:
@@ -4069,7 +4095,10 @@ def write_promotion_comparison_sheet_reference(
                 row
                 for row in range(1, (sheet.max_row or 1) + 1)
                 if "推广消耗" in cell_text(sheet.cell(row, 2).value)
-                and "推广营业额" in cell_text(sheet.cell(row, 3).value)
+                and (
+                    "推广营业额" in cell_text(sheet.cell(row, 3).value)
+                    or "推广营业额" in cell_text(sheet.cell(row, 4).value)
+                )
             ]
             if keyword == "美团" and header_rows:
                 header_row = header_rows[0]
@@ -4080,15 +4109,32 @@ def write_promotion_comparison_sheet_reference(
 
         row_values: dict[str, dict[str, Any]] = {}
         total_values: dict[str, Any] = {}
-        header_text_by_key = {
-            key: cell_text(sheet.cell(header_row, 2 + idx).value)
-            for idx, (key, _label, _mode, _fmt) in enumerate(fields)
+        label_aliases = {
+            "ad_roi": ["实付ROI", "营业额ROI", *PROMO_ROI_ALIASES],
+            "avg_ad_spend": ["日均推广消耗"],
         }
+        metric_col_by_key: dict[str, int | None] = {}
+        header_text_by_key: dict[str, str] = {}
+        for key, label, _mode, _fmt in fields:
+            aliases = [label, *label_aliases.get(key, [])]
+            found_col = None
+            found_text = ""
+            for col in range(2, min(sheet.max_column or 2, 40) + 1):
+                text = cell_text(sheet.cell(header_row, col).value)
+                if any(alias and alias in text for alias in aliases):
+                    found_col = col
+                    found_text = text
+                    break
+            metric_col_by_key[key] = found_col
+            header_text_by_key[key] = found_text
         for row in range(header_row + 1, (sheet.max_row or header_row) + 1):
             label = cell_text(sheet.cell(row, 1).value)
             if not label:
                 continue
-            values = {key: get_prev(sheet, row, 2 + idx) for idx, (key, _label, _mode, _fmt) in enumerate(fields)}
+            values = {
+                key: get_prev(sheet, row, metric_col_by_key.get(key)) if metric_col_by_key.get(key) else None
+                for key, _label, _mode, _fmt in fields
+            }
             # Older generated reports used this position for "活动"; never treat that value as bid.
             if "出价" not in header_text_by_key.get("ad_bid", ""):
                 values["ad_bid"] = None
@@ -4162,7 +4208,7 @@ def write_promotion_comparison_sheet_reference(
         return values
 
     def merge_promotion_sources(*sources: dict[str, Any] | None) -> dict[str, Any]:
-        keys = [key for key, _label, _mode, _fmt in fields] + ["ad_visits"]
+        keys = [key for key, _label, _mode, _fmt in fields] + ["ad_visits", "business_days"]
         merged: dict[str, Any] = {}
         for key in keys:
             for source in sources:
@@ -4173,6 +4219,8 @@ def write_promotion_comparison_sheet_reference(
                 merged[key] = None
         if not has_value(merged.get("ad_roi")) and has_value(merged.get("ad_orig")) and has_value(merged.get("ad_spend")):
             merged["ad_roi"] = safe_div(merged.get("ad_orig"), merged.get("ad_spend"))
+        if not has_value(merged.get("avg_ad_spend")) and has_value(merged.get("ad_spend")) and has_value(merged.get("business_days")):
+            merged["avg_ad_spend"] = safe_div(merged.get("ad_spend"), merged.get("business_days"))
         if not has_value(merged.get("ad_bid")) and has_value(merged.get("ad_spend")) and has_value(merged.get("ad_visits")):
             merged["ad_bid"] = safe_div(merged.get("ad_spend"), merged.get("ad_visits"))
         if not has_value(merged.get("ad_share")) and has_value(merged.get("paid_exp")) and has_value(merged.get("exp_count")):
@@ -4210,7 +4258,11 @@ def write_promotion_comparison_sheet_reference(
 
             metric_row = None
             for row in range(title_row + 1, min(ws.max_row or title_row, title_row + 6) + 1):
-                if "推广消耗" in cell_text(ws.cell(row, 2).value) and "推广营业额" in cell_text(ws.cell(row, 3).value):
+                if (
+                    "推广消耗" in cell_text(ws.cell(row, 2).value)
+                    and "日均推广消耗" in cell_text(ws.cell(row, 3).value)
+                    and "推广营业额" in cell_text(ws.cell(row, 4).value)
+                ):
                     metric_row = row
                     break
             if metric_row is None:
@@ -4245,7 +4297,7 @@ def write_promotion_comparison_sheet_reference(
             template_row = max(block["data_start"], block["total_row"] - 1)
             ws.insert_rows(insert_at, rows_to_add)
             for row in range(insert_at, insert_at + rows_to_add):
-                copy_row_template(ws, template_row, row, 28)
+                copy_row_template(ws, template_row, row, 1 + period_width * 3)
             block["total_row"] += rows_to_add
 
         def write_template_value(row: int, col: int, value: Any, number_format: str | None = None) -> None:
@@ -4265,18 +4317,22 @@ def write_promotion_comparison_sheet_reference(
             write_template_formula(row, col, formula, number_format, force=True)
 
         def fill_block(keyword: str, scope: str) -> bool:
+            current_start_col = 2
+            previous_start_col = current_start_col + period_width
+            comparison_start_col = previous_start_col + period_width
+            clear_end_col = 1 + period_width * 3
             block = find_template_block(keyword)
             if not block:
                 return False
             ensure_block_capacity(block, len(stores))
-            write_template_value(block["period_row"], 2, current_label)
-            write_template_value(block["period_row"], 11, previous_label)
-            write_template_value(block["period_row"], 20, "环比")
+            write_template_value(block["period_row"], current_start_col, current_label)
+            write_template_value(block["period_row"], previous_start_col, previous_label)
+            write_template_value(block["period_row"], comparison_start_col, "环比")
 
             for offset, row in enumerate(range(block["data_start"], block["total_row"])):
                 store = stores[offset] if offset < len(stores) else None
                 if store is None:
-                    for col in range(1, 29):
+                    for col in range(1, clear_end_col + 1):
                         ws.cell(row, col).value = None
                     continue
 
@@ -4284,9 +4340,9 @@ def write_promotion_comparison_sheet_reference(
                 cur_values = metric_values(metrics.get(store.code, {}).get(scope, {}), zero_fill=True)
                 prev_values = previous_values(store, scope)
                 for idx, (key, _label, mode, number_format) in enumerate(fields):
-                    cur_col = 2 + idx
-                    prev_col = 11 + idx
-                    comp_col = 20 + idx
+                    cur_col = current_start_col + idx
+                    prev_col = previous_start_col + idx
+                    comp_col = comparison_start_col + idx
                     cur_value = cur_values.get(key)
                     prev_value = prev_values.get(key)
                     write_template_value(row, cur_col, cur_value, number_format)
@@ -4304,20 +4360,20 @@ def write_promotion_comparison_sheet_reference(
             total_values = metric_values(totals.get(scope, {}))
             prev_total_values = previous_values(None, scope)
             for idx, (key, _label, mode, number_format) in enumerate(fields):
-                cur_col = 2 + idx
-                prev_col = 11 + idx
-                comp_col = 20 + idx
+                cur_col = current_start_col + idx
+                prev_col = previous_start_col + idx
+                comp_col = comparison_start_col + idx
                 data_first = block["data_start"]
                 data_last = total_row - 1
                 if data_last >= data_first and key in {"ad_spend", "ad_orig", "ad_orders", "exp_count", "paid_exp", "natural_exp"}:
                     write_total_formula(total_row, cur_col, f"=SUM({ws.cell(data_first, cur_col).coordinate}:{ws.cell(data_last, cur_col).coordinate})", number_format)
                     write_total_formula(total_row, prev_col, f"=SUM({ws.cell(data_first, prev_col).coordinate}:{ws.cell(data_last, prev_col).coordinate})", number_format)
                 elif key == "ad_roi":
-                    write_total_formula(total_row, cur_col, f"=IFERROR({ws.cell(total_row, 3).coordinate}/{ws.cell(total_row, 2).coordinate},0)", number_format)
-                    write_total_formula(total_row, prev_col, f"=IFERROR({ws.cell(total_row, 12).coordinate}/{ws.cell(total_row, 11).coordinate},0)", number_format)
+                    write_total_formula(total_row, cur_col, f"=IFERROR({ws.cell(total_row, current_start_col + 2).coordinate}/{ws.cell(total_row, current_start_col).coordinate},0)", number_format)
+                    write_total_formula(total_row, prev_col, f"=IFERROR({ws.cell(total_row, previous_start_col + 2).coordinate}/{ws.cell(total_row, previous_start_col).coordinate},0)", number_format)
                 elif key == "ad_share":
-                    write_total_formula(total_row, cur_col, f"=IFERROR({ws.cell(total_row, 9).coordinate}/{ws.cell(total_row, 7).coordinate},0)", number_format)
-                    write_total_formula(total_row, prev_col, f"=IFERROR({ws.cell(total_row, 18).coordinate}/{ws.cell(total_row, 16).coordinate},0)", number_format)
+                    write_total_formula(total_row, cur_col, f"=IFERROR({ws.cell(total_row, current_start_col + 8).coordinate}/{ws.cell(total_row, current_start_col + 6).coordinate},0)", number_format)
+                    write_total_formula(total_row, prev_col, f"=IFERROR({ws.cell(total_row, previous_start_col + 8).coordinate}/{ws.cell(total_row, previous_start_col + 6).coordinate},0)", number_format)
                 else:
                     write_template_value(total_row, cur_col, total_values.get(key), number_format)
                     write_template_value(total_row, prev_col, prev_total_values.get(key), number_format)
@@ -4361,10 +4417,11 @@ def write_promotion_comparison_sheet_reference(
         "H": 14.0909090909091,
         "I": 13,
         "J": 13,
+        "K": 13,
     }
     ws.column_dimensions["A"].width = widths["A"]
-    for offset in (0, 9, 18):
-        for idx in range(1, 10):
+    for offset in (0, period_width, period_width * 2):
+        for idx in range(1, period_width + 1):
             source_letter = get_column_letter(idx + 1)
             target_letter = get_column_letter(idx + 1 + offset)
             ws.column_dimensions[target_letter].width = widths[source_letter]
@@ -4384,10 +4441,16 @@ def write_promotion_comparison_sheet_reference(
 
     def apply_block_borders(start_row: int, data_start: int, total_row: int) -> None:
         end_col = 1 + period_width * 3
+        current_start_col = 2
+        previous_start_col = current_start_col + period_width
+        comparison_start_col = previous_start_col + period_width
+        current_end_col = previous_start_col - 1
+        previous_end_col = comparison_start_col - 1
+        comparison_end_col = end_col
         for row in range(start_row, total_row + 1):
             for col in range(1, end_col + 1):
-                left = medium if col in (1, 2, 11, 20) else thin
-                right = medium if col in (1, 10, 19, 28) else thin
+                left = medium if col in (1, current_start_col, previous_start_col, comparison_start_col) else thin
+                right = medium if col in (1, current_end_col, previous_end_col, comparison_end_col) else thin
                 top = medium if row in (start_row, data_start) else thin
                 bottom = medium if row == total_row else thin
                 ws.cell(row, col).border = Border(left=left, right=right, top=top, bottom=bottom)
@@ -4397,6 +4460,12 @@ def write_promotion_comparison_sheet_reference(
         metric_row = title_row + 2
         data_start = title_row + 3
         total_row = data_start + len(stores)
+        current_start_col = 2
+        previous_start_col = current_start_col + period_width
+        comparison_start_col = previous_start_col + period_width
+        current_end_col = previous_start_col - 1
+        previous_end_col = comparison_start_col - 1
+        comparison_end_col = 1 + period_width * 3
 
         ws.row_dimensions[title_row].height = 17.25
         ws.row_dimensions[metric_row].height = 17.25
@@ -4406,14 +4475,14 @@ def write_promotion_comparison_sheet_reference(
         ws.cell(title_row, 1).alignment = Alignment(vertical="center")
 
         ws.merge_cells(start_row=header_row, start_column=1, end_row=metric_row, end_column=1)
-        ws.merge_cells(start_row=header_row, start_column=2, end_row=header_row, end_column=10)
-        ws.merge_cells(start_row=header_row, start_column=11, end_row=header_row, end_column=19)
-        ws.merge_cells(start_row=header_row, start_column=20, end_row=header_row, end_column=28)
+        ws.merge_cells(start_row=header_row, start_column=current_start_col, end_row=header_row, end_column=current_end_col)
+        ws.merge_cells(start_row=header_row, start_column=previous_start_col, end_row=header_row, end_column=previous_end_col)
+        ws.merge_cells(start_row=header_row, start_column=comparison_start_col, end_row=header_row, end_column=comparison_end_col)
         set_cell(header_row, 1, "门店名称", bold=True, fill=fill)
-        set_cell(header_row, 2, current_label, bold=True, fill=fill)
-        set_cell(header_row, 11, previous_label, bold=True, fill=fill)
-        set_cell(header_row, 20, "环比", bold=True, fill=fill)
-        for start_col in (2, 11, 20):
+        set_cell(header_row, current_start_col, current_label, bold=True, fill=fill)
+        set_cell(header_row, previous_start_col, previous_label, bold=True, fill=fill)
+        set_cell(header_row, comparison_start_col, "环比", bold=True, fill=fill)
+        for start_col in (current_start_col, previous_start_col, comparison_start_col):
             for idx, (_key, label, _mode, _fmt) in enumerate(fields):
                 set_cell(metric_row, start_col + idx, label, bold=True, fill=fill)
 
@@ -4426,9 +4495,9 @@ def write_promotion_comparison_sheet_reference(
                 cur_value = cur_values.get(key)
                 prev_value = prev_values.get(key)
                 comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
-                set_cell(row, 2 + idx, cur_value, number_format)
-                set_cell(row, 11 + idx, prev_value, number_format)
-                set_cell(row, 20 + idx, comp_value, "0.0%" if mode == "growth" else number_format)
+                set_cell(row, current_start_col + idx, cur_value, number_format)
+                set_cell(row, previous_start_col + idx, prev_value, number_format)
+                set_cell(row, comparison_start_col + idx, comp_value, "0.0%" if mode == "growth" else number_format)
 
         set_cell(total_row, 1, "总计", bold=True)
         total_values = metric_values(totals.get(scope, {}))
@@ -4437,9 +4506,9 @@ def write_promotion_comparison_sheet_reference(
             cur_value = total_values.get(key)
             prev_value = prev_total_values.get(key)
             comp_value = growth(cur_value, prev_value) if mode == "growth" else diff(cur_value, prev_value)
-            set_cell(total_row, 2 + idx, cur_value, number_format, bold=True)
-            set_cell(total_row, 11 + idx, prev_value, number_format, bold=True)
-            set_cell(total_row, 20 + idx, comp_value, "0.0%" if mode == "growth" else number_format, bold=True)
+            set_cell(total_row, current_start_col + idx, cur_value, number_format, bold=True)
+            set_cell(total_row, previous_start_col + idx, prev_value, number_format, bold=True)
+            set_cell(total_row, comparison_start_col + idx, comp_value, "0.0%" if mode == "growth" else number_format, bold=True)
 
         apply_block_borders(header_row, data_start, total_row)
         return total_row
