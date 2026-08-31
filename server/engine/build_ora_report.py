@@ -2283,10 +2283,13 @@ PACKAGE_CANONICAL = [
     "超大杯美式·红宝石瑰夏（双杯）",
     "车厘子可可拿铁（双杯）",
     "瑰夏滴滤咖啡套餐",
+    "超大杯美式4选2",
 ]
 PACKAGE_ALIASES = {
     "超大杯美式·红宝石瑰夏（双杯套餐）": "超大杯美式·红宝石瑰夏（双杯）",
     "瑰夏滴滤咖啡套餐": "瑰夏滴滤咖啡套餐",
+    "超大杯美式4选2": "超大杯美式4选2",
+    "超大杯美式四选二": "超大杯美式4选2",
 }
 
 
@@ -2299,6 +2302,8 @@ def canonical_package(name: Any) -> str | None:
         return None
     raw = str(name).strip()
     n = norm_product(raw)
+    if all(part in n for part in ["超大杯美式", "4选2"]):
+        return "超大杯美式4选2"
     if all(part in n for part in ["超大杯美式", "红宝石瑰夏", "双杯"]):
         return "超大杯美式·红宝石瑰夏（双杯）"
     for alias, canon in PACKAGE_ALIASES.items():
