@@ -3060,6 +3060,15 @@ def fmt_pct_abs(value: float | None) -> str:
     return f"{abs(value) * 100:.1f}%"
 
 
+def fmt_trend_pct(label: str, value: float | None, delta: float) -> str:
+    if value is not None and abs(round(value * 100, 1)) <= 0:
+        return f"{label}持平"
+    word = trend_word(delta)
+    if word == "持平":
+        return f"{label}持平"
+    return f"{label}{word}{fmt_pct_abs(value)}"
+
+
 def fmt_signed_pct(value: float | None) -> str:
     if value is None or abs(round(value * 100, 1)) <= 0:
         return "持平"
@@ -3152,8 +3161,7 @@ def exposure_phrase(cur: dict[str, float], prev: dict[str, float]) -> str:
     display_delta = exp_delta
     if exp_growth is not None and abs(round(exp_growth * 100, 1)) <= 0:
         display_delta = 0.0
-    word = trend_word(display_delta)
-    phrase = f"曝光量{word}{fmt_pct_abs(exp_growth)}"
+    phrase = fmt_trend_pct("曝光量", exp_growth, display_delta)
     if display_delta >= -1e-9:
         return phrase
 
@@ -3163,9 +3171,9 @@ def exposure_phrase(cur: dict[str, float], prev: dict[str, float]) -> str:
     natural_growth = growth(cur_natural, prev_natural)
     paid_growth = record_growth(cur, prev, "paid_exp")
     pieces = [
-        f"总曝光次数{trend_word(record_delta(cur, prev, 'exp_count'))}{fmt_pct_abs(total_growth)}",
-        f"自然曝光次数{trend_word(cur_natural - prev_natural)}{fmt_pct_abs(natural_growth)}",
-        f"付费曝光次数{trend_word(record_delta(cur, prev, 'paid_exp'))}{fmt_pct_abs(paid_growth)}",
+        fmt_trend_pct("总曝光次数", total_growth, record_delta(cur, prev, "exp_count")),
+        fmt_trend_pct("自然曝光次数", natural_growth, cur_natural - prev_natural),
+        fmt_trend_pct("付费曝光次数", paid_growth, record_delta(cur, prev, "paid_exp")),
     ]
     total_drop = prev.get("exp_count", 0.0) - cur.get("exp_count", 0.0)
     paid_drop = prev.get("paid_exp", 0.0) - cur.get("paid_exp", 0.0)
