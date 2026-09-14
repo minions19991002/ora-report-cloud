@@ -3048,6 +3048,12 @@ def fmt_signed_float_with_hold(value: float, unit: str = "") -> str:
     return fmt_signed_float(value, unit)
 
 
+def fmt_at_change(delta: float, label: str = "AT") -> str:
+    if abs(round(delta, 1)) <= 0:
+        return f"{label}持平"
+    return f"{label}{fmt_signed_float(delta, '元')}"
+
+
 def fmt_pct_abs(value: float | None) -> str:
     if value is None:
         return "0.0%"
@@ -3087,7 +3093,7 @@ def fmt_sales_or_orders(label: str, cur: float, prev: float, unit: str) -> str:
 
 def fmt_at_delta(cur: float, prev: float, label: str = "AT") -> str:
     delta = cur - prev
-    return f"{label}{fmt_signed_float_with_hold(delta, '元')}"
+    return fmt_at_change(delta, label)
 
 
 def fmt_order_delta(cur: float, prev: float) -> str:
@@ -3408,7 +3414,7 @@ def build_performance_email_text(wb) -> str:
 
     return "\n".join(
         [
-            f"1、上周业绩：sales达成{fmt_int_abs(cur_total.get('sales', 0.0))}元，环比上周{email_pct_phrase(sales_growth)}；有效单{fmt_signed_int_with_hold(orders_delta, '单')}，AT{fmt_signed_float_with_hold(at_delta, '元')}",
+            f"1、上周业绩：sales达成{fmt_int_abs(cur_total.get('sales', 0.0))}元，环比上周{email_pct_phrase(sales_growth)}；有效单{fmt_signed_int_with_hold(orders_delta, '单')}，{fmt_at_change(at_delta, 'AT')}",
             f"渠道表现：美团sales环比{email_pct_phrase(mt_sales_growth)}（{fmt_signed_int_with_hold(mt_sales_delta, '元')}），饿了么sales环比{email_pct_phrase(ele_sales_growth)}（{fmt_signed_int_with_hold(ele_sales_delta, '元')}）",
             f"2、折扣情况：整体折扣率为{fmt_level_pct(cur_total.get('discount_rate', 0.0))}（环比{fmt_signed_pct(discount_delta)}）",
             f"3、流量表现：店均日曝光人数{fmt_int_abs(cur_total.get('exp_people_daily', 0.0))}（环比{fmt_signed_pct(exp_daily_growth)}），进店转化率{fmt_level_pct(cur_total.get('entry_rate', 0.0))}（环比{fmt_signed_pct(entry_delta)}），下单转化率{fmt_level_pct(cur_total.get('order_rate', 0.0))}（环比{fmt_signed_pct(order_rate_delta)}）",
