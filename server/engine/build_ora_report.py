@@ -4301,6 +4301,58 @@ def write_promotion_comparison_sheet_reference(
                 "total_row": total_row,
             }
 
+        def sync_template_header_style(source_block: dict[str, int], target_block: dict[str, int], max_col: int) -> None:
+            """Make a lower template block header structurally match the upper block.
+
+            The template may carry different merged cells or header labels for 美团/饿了么.
+            Keep the target block's fill color, but copy the source block's layout, labels,
+            borders, fonts, alignment, and number formats.
+            """
+            source_rows = [source_block["period_row"], source_block["metric_row"]]
+            target_rows = [target_block["period_row"], target_block["metric_row"]]
+            target_fill = copy(ws.cell(target_block["metric_row"], 2).fill)
+            if not target_fill or target_fill.fill_type is None:
+                target_fill = PatternFill("solid", fgColor="FF00B0F0")
+
+            for merged in list(ws.merged_cells.ranges):
+                if (
+                    merged.max_row >= target_rows[0]
+                    and merged.min_row <= target_rows[-1]
+                    and merged.max_col >= 1
+                    and merged.min_col <= max_col
+                ):
+                    ws.unmerge_cells(str(merged))
+
+            row_offset = target_rows[0] - source_rows[0]
+            source_merges = []
+            for merged in list(ws.merged_cells.ranges):
+                if (
+                    merged.min_row >= source_rows[0]
+                    and merged.max_row <= source_rows[-1]
+                    and merged.min_col >= 1
+                    and merged.max_col <= max_col
+                ):
+                    source_merges.append(
+                        (merged.min_row, merged.min_col, merged.max_row, merged.max_col)
+                    )
+
+            for src_row, dst_row in zip(source_rows, target_rows):
+                ws.row_dimensions[dst_row].height = ws.row_dimensions[src_row].height
+                for col in range(1, max_col + 1):
+                    src = ws.cell(src_row, col)
+                    dst = ws.cell(dst_row, col)
+                    copy_cell_style(src, dst)
+                    dst.fill = copy(target_fill)
+                    dst.value = src.value
+
+            for min_row, min_col, max_row, max_col_ in source_merges:
+                ws.merge_cells(
+                    start_row=min_row + row_offset,
+                    start_column=min_col,
+                    end_row=max_row + row_offset,
+                    end_column=max_col_,
+                )
+
         def ensure_block_capacity(block: dict[str, int], required_rows: int) -> None:
             capacity = block["total_row"] - block["data_start"]
             if capacity >= required_rows:
@@ -4398,6 +4450,11 @@ def write_promotion_comparison_sheet_reference(
                     formula_format = number_format
                 write_total_formula(total_row, comp_col, formula, formula_format)
             return True
+
+        mt_block = find_template_block("美团")
+        ele_block = find_template_block("饿了么")
+        if mt_block and ele_block:
+            sync_template_header_style(mt_block, ele_block, 1 + period_width * 3)
 
         ok = fill_block("美团", "mt") and fill_block("饿了么", "ele")
         if ok:
