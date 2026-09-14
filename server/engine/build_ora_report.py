@@ -1400,12 +1400,6 @@ def normalize_generated_metric_labels(wb) -> None:
 
 def apply_total_row_bold(wb) -> None:
     """Keep total rows visually distinct without changing other formatting."""
-    fixed_rows = {
-        "V2": [19, 39, 59, 80],
-        CURRENT_SHEET: [19, 39, 59],
-        "用户体验-客诉": [17],
-    }
-
     def bold_row(ws, row: int) -> None:
         for col in range(1, ws.max_column + 1):
             cell = ws.cell(row, col)
@@ -1418,7 +1412,7 @@ def apply_total_row_bold(wb) -> None:
             continue
         if ws.title == "上期":
             continue
-        rows_to_bold = set(fixed_rows.get(ws.title, []))
+        rows_to_bold = set()
         for row in ws.iter_rows():
             for cell in row:
                 value = cell.value
