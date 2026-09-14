@@ -2339,6 +2339,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         norm_product(name)
         for name in [
             "配送服务费",
+            "外卖餐盒费",
             "常规浓缩/浓度（ORA）",
             "加蜂蜜（ORA）",
             "加全脂奶（ORA）",
@@ -2466,16 +2467,22 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
     for row in range(2, prev_single_total_row):
         name = prev_single.cell(row, 3).value
         qty = prev_single.cell(row, 4).value
-        if name:
+        if (
+            name
+            and norm_product(str(name)) not in single_excluded_products
+            and canonical_package(str(name)) is None
+        ):
             prev_single_qty[str(name)] = float(qty or 0)
 
     rows: list[dict[str, Any]] = []
     denom = total_store_days or PERIOD_DAYS
+    current_names: set[str] = set()
     for _, row in single_ag.iterrows():
         name = str(row["_name"])
         qty = float(row["qty"])
         if abs(qty) < 1e-12 and abs(prev_single_qty.get(name, 0.0)) < 1e-12:
             continue
+        current_names.add(name)
         rows.append(
             {
                 "name": name,
@@ -2483,6 +2490,29 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
                 "qty": qty,
                 "usd": safe_div(qty, denom),
                 "sales": float(row["sales"]),
+            }
+        )
+
+    # The single-product ranking compares the full current and previous periods.
+    # Retain products that only existed in the previous report instead of reducing
+    # the detail to products present in both periods.
+    previous_only = sorted(
+        (
+            (name, qty)
+            for name, qty in prev_single_qty.items()
+            if name not in current_names
+            and abs(qty) >= 1e-12
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    for name, _prev_qty in previous_only:
+        rows.append(
+            {
+                "name": name,
+                "category": infer_category(name, category_map),
+                "qty": 0.0,
+                "usd": 0.0,
+                "sales": 0.0,
             }
         )
 
@@ -3666,7 +3696,7 @@ def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg
             write(ws.cell(idx, col), value)
     qty_sum = sum(item["qty"] for item in single_rows)
     sales_sum = sum(item["sales"] for item in single_rows)
-    prev_sum = scalar_num(prev.cell(prev_total_row, 4).value)
+    prev_sum = sum(prev_single_qty.values())
     write(ws.cell(total_row, 1), "总计")
     for col, value in {4: qty_sum, 5: safe_div(qty_sum, total_store_days or PERIOD_DAYS), 6: sales_sum, 7: prev_sum, 8: diff(qty_sum, prev_sum), 13: prev_sum}.items():
         write(ws.cell(total_row, col), value)
