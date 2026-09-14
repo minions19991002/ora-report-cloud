@@ -2476,13 +2476,11 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
 
     rows: list[dict[str, Any]] = []
     denom = total_store_days or PERIOD_DAYS
-    current_names: set[str] = set()
     for _, row in single_ag.iterrows():
         name = str(row["_name"])
         qty = float(row["qty"])
         if abs(qty) < 1e-12 and abs(prev_single_qty.get(name, 0.0)) < 1e-12:
             continue
-        current_names.add(name)
         rows.append(
             {
                 "name": name,
@@ -2490,29 +2488,6 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
                 "qty": qty,
                 "usd": safe_div(qty, denom),
                 "sales": float(row["sales"]),
-            }
-        )
-
-    # The single-product ranking compares the full current and previous periods.
-    # Retain products that only existed in the previous report instead of reducing
-    # the detail to products present in both periods.
-    previous_only = sorted(
-        (
-            (name, qty)
-            for name, qty in prev_single_qty.items()
-            if name not in current_names
-            and abs(qty) >= 1e-12
-        ),
-        key=lambda item: (-item[1], item[0]),
-    )
-    for name, _prev_qty in previous_only:
-        rows.append(
-            {
-                "name": name,
-                "category": infer_category(name, category_map),
-                "qty": 0.0,
-                "usd": 0.0,
-                "sales": 0.0,
             }
         )
 
