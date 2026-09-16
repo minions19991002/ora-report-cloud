@@ -4027,6 +4027,30 @@ def write_promotion_comparison_sheet_reference(
     totals: dict[str, Any],
 ) -> None:
     """Fill the template promotion comparison sheet, falling back to generated layout."""
+    current_ws = wb[CURRENT_SHEET]
+    section_row = find_section_title_row(current_ws, "营业数据")
+    order_by_code = {}
+    order_by_name = {}
+    if section_row:
+        for header_row in range(section_row + 1, min(section_row + 6, current_ws.max_row + 1)):
+            headers = {
+                cell_text(current_ws.cell(header_row, col).value): col
+                for col in range(1, current_ws.max_column + 1)
+            }
+            code_col = headers.get("店号") or headers.get("门店编号")
+            name_col = headers.get("店名") or headers.get("门店名称")
+            if not code_col or not name_col:
+                continue
+            end_row = find_section_total_row_or_none(current_ws, "营业数据") or current_ws.max_row + 1
+            order_by_code, order_by_name = sheet_store_row_maps(
+                current_ws, header_row + 1, end_row - 1, code_col, name_col
+            )
+            break
+    # Both platform blocks follow the current report's actual store rows.
+    stores = sorted(
+        stores,
+        key=lambda store: matched_row_by_store(store, order_by_code, order_by_name) or float("inf"),
+    )
     using_template_sheet = PROMO_COMPARISON_SHEET in wb.sheetnames
     if using_template_sheet:
         ws = wb[PROMO_COMPARISON_SHEET]
