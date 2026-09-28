@@ -4389,16 +4389,30 @@ def write_promotion_comparison_sheet_reference(
                 )
 
         def ensure_block_capacity(block: dict[str, int], required_rows: int) -> None:
+            # Data and total rows must never retain template merges. Openpyxl does
+            # not reliably move merged ranges when rows are inserted/deleted.
+            for merged in list(ws.merged_cells.ranges):
+                if merged.max_row >= block["data_start"] and merged.min_row <= block["total_row"]:
+                    ws.unmerge_cells(str(merged))
+
             capacity = block["total_row"] - block["data_start"]
-            if capacity >= required_rows:
-                return
-            rows_to_add = required_rows - capacity
-            insert_at = block["total_row"]
-            template_row = max(block["data_start"], block["total_row"] - 1)
-            ws.insert_rows(insert_at, rows_to_add)
-            for row in range(insert_at, insert_at + rows_to_add):
-                copy_row_template(ws, template_row, row, 1 + period_width * 3)
-            block["total_row"] += rows_to_add
+            if capacity < required_rows:
+                rows_to_add = required_rows - capacity
+                insert_at = block["total_row"]
+                template_row = max(block["data_start"], block["total_row"] - 1)
+                ws.insert_rows(insert_at, rows_to_add)
+                for row in range(insert_at, insert_at + rows_to_add):
+                    copy_row_template(ws, template_row, row, 1 + period_width * 3)
+                block["total_row"] += rows_to_add
+            elif capacity > required_rows:
+                rows_to_delete = capacity - required_rows
+                ws.delete_rows(block["data_start"] + required_rows, rows_to_delete)
+                block["total_row"] -= rows_to_delete
+
+            # The total row is a normal row: one metric per cell, no merges.
+            for merged in list(ws.merged_cells.ranges):
+                if merged.min_row <= block["total_row"] <= merged.max_row:
+                    ws.unmerge_cells(str(merged))
 
         def write_template_value(row: int, col: int, value: Any, number_format: str | None = None) -> None:
             cell = ws.cell(row, col)
