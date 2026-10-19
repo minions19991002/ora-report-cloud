@@ -2278,12 +2278,17 @@ PACKAGE_CANONICAL = [
     "车厘子可可拿铁（双杯）",
     "瑰夏滴滤咖啡套餐",
     "超大杯美式4选2",
+    "经典咖啡组合",
+    "零咖饮品4选2",
 ]
 PACKAGE_ALIASES = {
     "超大杯美式·红宝石瑰夏（双杯套餐）": "超大杯美式·红宝石瑰夏（双杯）",
     "瑰夏滴滤咖啡套餐": "瑰夏滴滤咖啡套餐",
     "超大杯美式4选2": "超大杯美式4选2",
     "超大杯美式四选二": "超大杯美式4选2",
+    "经典咖啡组合": "经典咖啡组合",
+    "零咖饮品4选2": "零咖饮品4选2",
+    "零咖饮品四选二": "零咖饮品4选2",
 }
 
 
@@ -2377,6 +2382,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
         df["_sales"] = to_num(df["gross_amount"])
         df = df[(df["_qty"] > 0) & (df["_sales"] > 0)].copy()
         df = df[~df["_name"].apply(lambda x: norm_product(x) in single_excluded_products)].copy()
+        df = df[df["_name"].apply(lambda x: canonical_package(x) is None)].copy()
         single = df[["_name", "_qty", "_sales"]]
         if single.empty:
             return pd.DataFrame(columns=["_name", "qty", "sales"])
