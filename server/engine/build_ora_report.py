@@ -61,6 +61,7 @@ PROMO_COMPARISON_SHEET = "双平台推广"
 PERIOD_DAYS = int((END - START).days) + 1
 TEMPLATE_CURRENT_LABELS = ("6.15-6.21",)
 TEMPLATE_PREVIOUS_LABELS = ("6.8-6.14",)
+EXCLUDED_STORE_CODES = {"OSZ01"}  # 深圳湾文化广场，已闭店
 
 
 @dataclass
@@ -728,6 +729,38 @@ def ensure_section_store_rows(
     name_col: int,
     **identity_kwargs,
 ) -> None:
+    section_row = find_section_title_row(ws, title)
+    if section_row:
+        header_row = find_section_header_row(ws, title, fallback_start, code_col, name_col)
+        total_row = find_section_total_row_or_none(ws, title)
+        next_section = find_next_section_title_row(ws, section_row) or ((ws.max_row or section_row) + 1)
+        data_start = header_row + 1
+        data_end = (total_row - 1) if total_row else contiguous_store_end(ws, data_start, next_section - 1, code_col, name_col)
+    else:
+        data_start = fallback_start
+        data_end = fallback_end
+
+    active_codes = {store.code for store in stores}
+    active_names = {
+        norm_store_name(name): store.code
+        for store in stores
+        for name in (store.name, store.name_full)
+    }
+    seen_codes: set[str] = set()
+    rows_to_delete: list[int] = []
+    for row in range(data_start, data_end + 1):
+        code = cell_text(ws.cell(row, code_col).value)
+        name = norm_store_name(ws.cell(row, name_col).value)
+        if not code and not name:
+            continue
+        matched_code = code if code in active_codes else active_names.get(name)
+        if not matched_code or matched_code in seen_codes:
+            rows_to_delete.append(row)
+            continue
+        seen_codes.add(matched_code)
+    for row in reversed(rows_to_delete):
+        ws.delete_rows(row)
+
     by_code, by_name = section_store_row_maps(ws, title, fallback_start, fallback_end, code_col, name_col)
     missing = [store for store in stores if not matched_row_by_store(store, by_code, by_name)]
     if not missing:
@@ -758,6 +791,40 @@ def ensure_titled_store_rows(
     name_col: int,
     **identity_kwargs,
 ) -> None:
+    title_row = find_text_row(ws, title_candidates, max_col=8)
+    data_start = fallback_start
+    data_end = fallback_end
+    if title_row:
+        header_row = None
+        for row in range(title_row + 1, min(title_row + 8, ws.max_row or title_row) + 1):
+            if cell_text(ws.cell(row, code_col).value) in {"店号", "门店"}:
+                header_row = row
+                break
+        if header_row:
+            data_start = header_row + 1
+            data_end = contiguous_store_end(ws, data_start, min(header_row + 100, ws.max_row or header_row), code_col, name_col)
+
+    active_codes = {store.code for store in stores}
+    active_names = {
+        norm_store_name(name): store.code
+        for store in stores
+        for name in (store.name, store.name_full)
+    }
+    seen_codes: set[str] = set()
+    rows_to_delete: list[int] = []
+    for row in range(data_start, data_end + 1):
+        code = cell_text(ws.cell(row, code_col).value)
+        name = norm_store_name(ws.cell(row, name_col).value)
+        if not code and not name:
+            continue
+        matched_code = code if code in active_codes else active_names.get(name)
+        if not matched_code or matched_code in seen_codes:
+            rows_to_delete.append(row)
+            continue
+        seen_codes.add(matched_code)
+    for row in reversed(rows_to_delete):
+        ws.delete_rows(row)
+
     by_code, by_name = titled_store_row_maps(ws, title_candidates, fallback_start, fallback_end, code_col, name_col)
     missing = [store for store in stores if not matched_row_by_store(store, by_code, by_name)]
     if not missing:
@@ -789,6 +856,30 @@ def ensure_fixed_block_store_rows(
     end = contiguous_store_end(ws, fallback_start, max(fallback_end, fallback_start), code_col, name_col)
     if end < fallback_start:
         end = fallback_end
+
+    active_codes = {store.code for store in stores}
+    active_names: dict[str, str] = {}
+    for store in stores:
+        active_names[norm_store_name(store.name)] = store.code
+        active_names[norm_store_name(store.name_full)] = store.code
+
+    seen_codes: set[str] = set()
+    rows_to_delete: list[int] = []
+    for row in range(fallback_start, end + 1):
+        code = cell_text(ws.cell(row, code_col).value)
+        name = norm_store_name(ws.cell(row, name_col).value)
+        matched_code = code if code in active_codes else active_names.get(name)
+        if not matched_code or matched_code in seen_codes:
+            rows_to_delete.append(row)
+            continue
+        seen_codes.add(matched_code)
+
+    # Fixed blocks have no total row beneath them. Remove retired or duplicate
+    # template rows before appending new stores so the visible block stays exact.
+    for row in reversed(rows_to_delete):
+        ws.delete_rows(row)
+
+    end = contiguous_store_end(ws, fallback_start, max(fallback_start, end - len(rows_to_delete)), code_col, name_col)
     by_code, by_name = sheet_store_row_maps(ws, fallback_start, end, code_col, name_col)
     insert_at = end + 1
     append_missing_store_rows(ws, stores, by_code, by_name, insert_at, code_col, name_col, **identity_kwargs)
@@ -811,6 +902,28 @@ def delivery_row_bounds(ws) -> tuple[int, int]:
 
 
 def ensure_delivery_store_rows(ws, stores: list[Store]) -> None:
+    start, end = delivery_row_bounds(ws)
+    active_mt = {store.mt_id: store.code for store in stores}
+    active_ele = {store.ele_id: store.code for store in stores}
+    active_names = {
+        norm_store_name(name): store.code
+        for store in stores
+        for name in (store.name, store.name_full)
+    }
+    seen_codes: set[str] = set()
+    rows_to_delete: list[int] = []
+    for row in range(start, end + 1):
+        mt_id = norm_id(ws.cell(row, 4).value)
+        ele_id = norm_id(ws.cell(row, 3).value)
+        name = norm_store_name(ws.cell(row, 2).value)
+        matched_code = active_mt.get(mt_id) or active_ele.get(ele_id) or active_names.get(name)
+        if not matched_code or matched_code in seen_codes:
+            rows_to_delete.append(row)
+            continue
+        seen_codes.add(matched_code)
+    for row in reversed(rows_to_delete):
+        ws.delete_rows(row)
+
     start, end = delivery_row_bounds(ws)
     by_mt, by_ele, by_name = delivery_row_maps(ws, start, max(end, start - 1))
     by_code = {store.code: row for store in stores for row in [by_mt.get(store.mt_id) or by_ele.get(store.ele_id) or by_name.get(norm_store_name(store.name_full)) or by_name.get(norm_store_name(store.name))] if row}
@@ -875,12 +988,15 @@ def build_store_list() -> tuple[list[Store], dict[str, str], dict[str, str]]:
     for _, row in df.iterrows():
         if pd.isna(row.get("店号")):
             continue
+        code = str(row["店号"]).strip()
+        if code in EXCLUDED_STORE_CODES:
+            continue
         store = Store(
             name_full=str(row["门店名称"]).strip(),
             ele_id=norm_id(row["饿了么门店ID"]),
             mt_id=norm_id(row["美团门店ID"]),
             name=str(row.get("店名") or row["门店名称"]).strip(),
-            code=str(row["店号"]).strip(),
+            code=code,
         )
         stores.append(store)
         mt_to_code[store.mt_id] = store.code
@@ -1424,7 +1540,7 @@ def apply_total_row_bold(wb) -> None:
 
 
 def apply_negative_growth_red(wb) -> None:
-    """Show negative growth/comparison percentages in red without touching layout."""
+    """Show only negative growth/comparison values in red without touching layout."""
     red_font = Font(color="FF0000")
     keywords = ("增长", "同比", "环比")
 
@@ -1439,10 +1555,6 @@ def apply_negative_growth_red(wb) -> None:
                 header = cell_text(ws.cell(row, col).value)
                 if not header or not any(keyword in header for keyword in keywords):
                     continue
-                sample_rows = range(row + 1, min(max_row, row + 40) + 1)
-                percent_like = "%" in header or any("%" in str(ws.cell(sample_row, col).number_format or "") for sample_row in sample_rows)
-                if not percent_like:
-                    continue
                 col_letter = get_column_letter(col)
                 cell_range = f"{col_letter}{row + 1}:{col_letter}{max_row}"
                 if cell_range in formatted_ranges:
@@ -1454,10 +1566,16 @@ def apply_negative_growth_red(wb) -> None:
                 formatted_ranges.add(cell_range)
                 for data_row in range(row + 1, max_row + 1):
                     data_cell = ws.cell(data_row, col)
-                    if isinstance(data_cell.value, (int, float)) and data_cell.value < 0:
-                        font = copy(data_cell.font)
-                        font.color = "FF0000"
-                        data_cell.font = font
+                    value = data_cell.value
+                    if not isinstance(value, (int, float)) and not (isinstance(value, str) and value.startswith("=")):
+                        continue
+                    font = copy(data_cell.font)
+                    # Template rows may already carry a red font from a previous
+                    # store. Reset the base color so positive and zero values do
+                    # not inherit that stale style; conditional formatting will
+                    # still turn recalculated negative formulas red.
+                    font.color = "FF0000" if isinstance(value, (int, float)) and value < 0 else "000000"
+                    data_cell.font = font
 
 
 def apply_score_formatting(wb) -> None:
@@ -1478,16 +1596,31 @@ def apply_score_formatting(wb) -> None:
             for row in rows:
                 cell = ws.cell(row, col)
                 cell.number_format = "0.0"
-                if isinstance(cell.value, (int, float)) and cell.value < 4.5:
+                value = cell.value
+                if isinstance(value, (int, float)) or (isinstance(value, str) and value.startswith("=")):
                     font = copy(cell.font)
-                    font.color = "FF0000"
+                    font.color = "FF0000" if isinstance(value, (int, float)) and round(value, 1) < 4.5 else "000000"
                     cell.font = font
 
-    if CURRENT_SHEET in wb.sheetnames:
-        ws = wb[CURRENT_SHEET]
-        score_by_code, score_by_name = section_store_row_maps(ws, "门店评分", 63, 78)
-        rows = sorted(set(score_by_code.values()) | set(score_by_name.values()))
-        format_score_cells(ws, rows, [4, 14, 24])
+    def score_rows(ws) -> list[int]:
+        header_row = section_header(ws, "门店评分")
+        rows: list[int] = []
+        blank_run = 0
+        for row in range(header_row + 1, min(ws.max_row or header_row, header_row + 100) + 1):
+            if cell_text(ws.cell(row, 2).value) and cell_text(ws.cell(row, 3).value):
+                rows.append(row)
+                blank_run = 0
+            else:
+                blank_run += 1
+                if blank_run >= 2:
+                    break
+        return rows
+
+    for sheet_name in (CURRENT_SHEET, "上期"):
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        format_score_cells(ws, score_rows(ws), [4, 14, 24])
 
     if "V2" in wb.sheetnames:
         ws = wb["V2"]
@@ -3742,6 +3875,8 @@ def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg
 def write_complaints(wb, prev_wb, counts, top_rows) -> None:
     ws = wb["用户体验-客诉"]
     prev = prev_wb["用户体验-客诉"]
+    ws.cell(2, 3).value = PREVIOUS_SHEET
+    ws.cell(2, 4).value = CURRENT_SHEET
     cats = ["少餐具", "少菜品", "少酱料", "送错餐", "未看备注", "菜品口味", "菜品质量", "性价比低", "菜品异物", "客户原因", "物流问题", "服务态度差", "包装问题", "其他"]
     row_map = {ws.cell(r, 2).value: r for r in range(3, 17)}
     for cat in cats:
@@ -3756,6 +3891,14 @@ def write_complaints(wb, prev_wb, counts, top_rows) -> None:
     write(ws.cell(17, 3), sum((prev.cell(row_map[cat], 4).value or 0) for cat in cats))
     write(ws.cell(17, 4), sum(counts.values()))
     write(ws.cell(17, 7), diff(ws.cell(17, 4).value, ws.cell(17, 3).value))
+    for row in range(3, 18):
+        for col in (3, 4, 6, 7):
+            cell = ws.cell(row, col)
+            if not isinstance(cell.value, (int, float)):
+                continue
+            font = copy(cell.font)
+            font.color = "FF0000" if col == 7 and cell.value < 0 else "000000"
+            cell.font = font
 
     start = 23
     for r in range(start, 33):
@@ -3788,6 +3931,10 @@ def write_delivery(wb, prev_wb, mt_delivery, ele_delivery) -> None:
 def fill_delivery_values(wb, prev_wb, mt_delivery, ele_delivery, mt_to_code, ele_to_code) -> None:
     ws = wb["用户体验-配送"]
     prev = prev_wb["用户体验-配送"]
+    ws.cell(2, 8).value = f"{CURRENT_SHEET}日配送时长"
+    ws.cell(2, 9).value = f"{PREVIOUS_SHEET}日配送时长"
+    ws.cell(2, 15).value = f"{CURRENT_SHEET}日配送时长"
+    ws.cell(2, 16).value = f"{PREVIOUS_SHEET}日配送时长"
     prev_start, prev_end = delivery_row_bounds(prev)
     prev_maps = delivery_row_maps(prev, prev_start, max(prev_end, prev_start - 1))
     start, end = delivery_row_bounds(ws)
@@ -3805,6 +3952,10 @@ def fill_delivery_values(wb, prev_wb, mt_delivery, ele_delivery, mt_to_code, ele
             # 配送配置以上周周报为准；本期只重新计算配送时长。
             for col in (*range(1, 8), *range(11, 15)):
                 write(ws.cell(row, col), prev.cell(prev_row, col).value)
+        for col in (3, 4):
+            font = copy(ws.cell(row, col).font)
+            font.color = "000000"
+            ws.cell(row, col).font = font
         mt_cur = mt_delivery.get(mt_code) if mt_code else None
         ele_cur = ele_delivery.get(ele_code) if ele_code else None
         write_delivery_number(row, 8, mt_cur)
