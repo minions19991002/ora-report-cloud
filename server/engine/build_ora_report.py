@@ -1908,7 +1908,6 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
             biz_days[code] = biz_days.get(code, 0) + 1
     total_biz_days = sum(biz_days.values())
 
-    mt_store["_sales"] = to_num(mt_store["营业收入"]) + to_num(mt_store["平台服务费(含佣金和配送服务费)"])
     ele_store["_sales"] = to_num(ele_store["收入"]) + to_num(ele_store["平台技术服务费"]) + to_num(ele_store["履约技术服务费"])
     mt_paid_exp_from_store = "曝光提升数(次)" in mt_store.columns
     ele_paid_exp_from_store = "曝光提升数" in ele_store.columns
@@ -1920,7 +1919,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     mt_ag = sum_by_store(
         mt_store,
         "code",
-        ["_sales", "_ad_gmv_base", "商家活动支出", "有效订单", "曝光人数", "入店人数", "下单人数", "曝光次数", "曝光提升数(次)", "优惠前总额"],
+        ["_ad_gmv_base", "商家活动支出", "有效订单", "曝光人数", "入店人数", "下单人数", "曝光次数", "曝光提升数(次)", "优惠前总额"],
     )
     ele_ag = sum_by_store(
         ele_store,
