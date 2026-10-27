@@ -1044,7 +1044,7 @@ STORE_INFO_COLUMNS = {
 MT_STORE_COLUMNS = {
     "日期": ["date", "date_id", "统计日期"],
     "门店id": ["门店id", "门店ID", "平台门店ID", "门店编号"],
-    "订单收入": ["订单收入", "营业收入", "销售额", "营业额"],
+    "营业收入": ["营业收入", "销售额", "营业额"],
     "平台服务费(含佣金和配送服务费)": ["平台服务费(含佣金和配送服务费)", "平台服务费", "佣金和配送服务费"],
     "有效订单": ["有效订单", "订单数"],
     "曝光人数": ["曝光人数"],
@@ -1754,12 +1754,7 @@ def promotion_raw_metrics_for_period(
         return total
 
     mt_store = period_rows(
-        rename_columns_by_alias(
-            read_excel("美团门店数据.xlsx"),
-            MT_STORE_COLUMNS,
-            source_name="美团门店数据.xlsx",
-            required=["日期", "门店id", "订单收入"],
-        ),
+        rename_columns_by_alias(read_excel("美团门店数据.xlsx"), MT_STORE_COLUMNS, source_name="美团门店数据.xlsx", required=["日期", "门店id"]),
         "日期",
         start,
         end,
@@ -1875,12 +1870,7 @@ def promotion_raw_metrics_for_period(
 
 def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     mt_store = current_rows(
-        rename_columns_by_alias(
-            read_excel("美团门店数据.xlsx"),
-            MT_STORE_COLUMNS,
-            source_name="美团门店数据.xlsx",
-            required=["日期", "门店id", "订单收入"],
-        ),
+        rename_columns_by_alias(read_excel("美团门店数据.xlsx"), MT_STORE_COLUMNS, source_name="美团门店数据.xlsx", required=["日期", "门店id"]),
         "日期",
     )
     mt_store["_id"] = mt_store["门店id"].map(norm_id)
@@ -1918,8 +1908,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
             biz_days[code] = biz_days.get(code, 0) + 1
     total_biz_days = sum(biz_days.values())
 
-    # 看板美团营业收入按订单收入口径，不叠加平台服务费。
-    mt_store["_sales"] = to_num(mt_store["订单收入"])
+    mt_store["_sales"] = to_num(mt_store["营业收入"]) + to_num(mt_store["平台服务费(含佣金和配送服务费)"])
     ele_store["_sales"] = to_num(ele_store["收入"]) + to_num(ele_store["平台技术服务费"]) + to_num(ele_store["履约技术服务费"])
     mt_paid_exp_from_store = "曝光提升数(次)" in mt_store.columns
     ele_paid_exp_from_store = "曝光提升数" in ele_store.columns
@@ -2048,7 +2037,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         jd_op = ora_scope("jd")
         mini_op = ora_scope("mini")
 
-        mt_sales = mt.get("_sales", mt_op["sales"])
+        mt_sales = mt_op["sales"]
         ele_sales = ele_op["sales"]
         jd_sales = jd_op["sales"]
         mini_sales = mini_op["sales"]
