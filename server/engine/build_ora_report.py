@@ -2809,11 +2809,16 @@ def compact_period_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]] 
     """Resolve the redesigned compact period page by section labels and headers."""
     op_row = find_section_header_row(sheet, "营业数据", 3, 2, 3)
     total_anchor = first_header_col(sheet, op_row, ["总sales"], exact=True)
+    total_daily_anchor = first_header_col(sheet, op_row, ["Sales_日均"], exact=True)
     mt_anchor = first_header_col(sheet, op_row, ["美团Sales_日均"], exact=True)
     ele_anchor = first_header_col(sheet, op_row, ["饿了么Sales_日均"], exact=True)
     mini_anchor = first_header_col(sheet, op_row, ["小程序Sales_日均"], exact=True)
-    compact_marker = first_header_col(sheet, op_row, ["订单环比%", "折扣率环比%"], exact=True)
-    if not all((total_anchor, mt_anchor, ele_anchor, mini_anchor, compact_marker)):
+    if not all((total_anchor, total_daily_anchor, mt_anchor, ele_anchor, mini_anchor)):
+        return None
+    # The compact page places 总sales before Sales_日均. The legacy page uses
+    # the opposite order, so this structural check avoids treating it as the
+    # redesigned schema even when both layouts share several header names.
+    if total_daily_anchor != total_anchor + 1:
         return None
 
     def col(row: int, names: list[str], start: int, end: int, exact: bool = True) -> int | None:
@@ -2821,6 +2826,11 @@ def compact_period_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]] 
 
     def cols(row: int, names: list[str], start: int, end: int, exact: bool = True) -> list[int]:
         return header_cols(sheet, row, names, start, end, exact)
+
+    def adjacent(metric_col: int | None, end: int) -> int | None:
+        if not metric_col or metric_col >= end:
+            return None
+        return metric_col + 1
 
     op_ranges = {
         "total": (total_anchor, mt_anchor - 1),
@@ -2831,39 +2841,45 @@ def compact_period_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]] 
     schema: dict[str, dict[str, dict[str, int | None]]] = {"营业数据": {}, "流量数据": {}, "推广数据": {}, "门店评分": {}}
 
     total_start, total_end = op_ranges["total"]
+    total_orders = col(op_row, ["ADT_日均"], total_start, total_end, exact=True)
+    total_at = col(op_row, ["AT"], total_start, total_end, exact=True)
     schema["营业数据"]["total"] = {
         "sales": total_anchor,
-        "sales_daily": col(op_row, ["Sales_日均"], total_start, total_end, exact=True),
-        "sales_growth": col(op_row, ["周环比%"], total_start, total_end, exact=True),
-        "orders_daily": col(op_row, ["ADT_日均"], total_start, total_end, exact=True),
-        "orders_growth": col(op_row, ["订单环比%"], total_start, total_end, exact=True),
-        "at": col(op_row, ["AT"], total_start, total_end, exact=True),
-        "at_delta": col(op_row, ["AT环比%"], total_start, total_end, exact=True),
+        "sales_daily": total_daily_anchor,
+        "sales_growth": adjacent(total_daily_anchor, total_end),
+        "orders_daily": total_orders,
+        "orders_growth": adjacent(total_orders, total_end),
+        "at": total_at,
+        "at_delta": adjacent(total_at, total_end),
     }
     for scope in ("mt", "ele"):
         start, end = op_ranges[scope]
-        week_cols = cols(op_row, ["周环比%"], start, end, exact=True)
+        discount_col = col(op_row, ["折扣率"], start, end, exact=True)
+        orders_col = col(op_row, ["ADT_日均"], start, end, exact=True)
+        at_col = col(op_row, ["AT"], start, end, exact=True)
         schema["营业数据"][scope] = {
             "sales_daily": start,
-            "sales_growth": week_cols[0] if len(week_cols) > 0 else None,
-            "discount_rate": col(op_row, ["折扣率"], start, end, exact=True),
-            "discount_delta": col(op_row, ["折扣率环比%"], start, end, exact=True),
-            "orders_daily": col(op_row, ["ADT_日均"], start, end, exact=True),
-            "orders_growth": week_cols[1] if len(week_cols) > 1 else None,
-            "at": col(op_row, ["AT"], start, end, exact=True),
-            "at_delta": week_cols[2] if len(week_cols) > 2 else None,
+            "sales_growth": adjacent(start, end),
+            "discount_rate": discount_col,
+            "discount_delta": adjacent(discount_col, end),
+            "orders_daily": orders_col,
+            "orders_growth": adjacent(orders_col, end),
+            "at": at_col,
+            "at_delta": adjacent(at_col, end),
         }
     start, end = op_ranges["mini"]
-    mini_growth = cols(op_row, ["周同比增长"], start, end, exact=False)
+    mini_discount = col(op_row, ["折扣率"], start, end, exact=True)
+    mini_orders = col(op_row, ["ADT_日均"], start, end, exact=True)
+    mini_at = col(op_row, ["AT"], start, end, exact=True)
     schema["营业数据"]["mini"] = {
         "sales_daily": start,
-        "sales_growth": mini_growth[0] if len(mini_growth) > 0 else None,
-        "discount_rate": col(op_row, ["折扣率"], start, end, exact=True),
-        "discount_delta": col(op_row, ["折扣率环比%"], start, end, exact=True),
-        "orders_daily": col(op_row, ["ADT_日均"], start, end, exact=True),
-        "orders_growth": mini_growth[1] if len(mini_growth) > 1 else None,
-        "at": col(op_row, ["AT"], start, end, exact=True),
-        "at_delta": mini_growth[2] if len(mini_growth) > 2 else None,
+        "sales_growth": adjacent(start, end),
+        "discount_rate": mini_discount,
+        "discount_delta": adjacent(mini_discount, end),
+        "orders_daily": mini_orders,
+        "orders_growth": adjacent(mini_orders, end),
+        "at": mini_at,
+        "at_delta": adjacent(mini_at, end),
     }
 
     traffic_row = find_section_header_row(sheet, "流量数据", 32, 2, 3)
