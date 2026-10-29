@@ -5144,6 +5144,33 @@ def write_promotion_comparison_sheet_reference(
                 if merged.min_row <= block["total_row"] <= merged.max_row:
                     ws.unmerge_cells(str(merged))
 
+        def rebuild_template_header_merges(block: dict[str, int]) -> None:
+            header_start = block["period_row"]
+            header_end = block["metric_row"]
+            max_col = 1 + period_width * 3
+            for merged in list(ws.merged_cells.ranges):
+                if (
+                    merged.max_row >= header_start
+                    and merged.min_row <= header_end
+                    and merged.max_col >= 1
+                    and merged.min_col <= max_col
+                ):
+                    ws.unmerge_cells(str(merged))
+
+            ws.merge_cells(
+                start_row=header_start,
+                start_column=1,
+                end_row=header_end,
+                end_column=1,
+            )
+            for start_col in (2, 2 + period_width, 2 + period_width * 2):
+                ws.merge_cells(
+                    start_row=header_start,
+                    start_column=start_col,
+                    end_row=header_start,
+                    end_column=start_col + period_width - 1,
+                )
+
         def write_template_value(row: int, col: int, value: Any, number_format: str | None = None) -> None:
             cell = ws.cell(row, col)
             write(cell, value)
@@ -5172,6 +5199,7 @@ def write_promotion_comparison_sheet_reference(
             write_template_value(block["period_row"], current_start_col, current_label)
             write_template_value(block["period_row"], previous_start_col, previous_label)
             write_template_value(block["period_row"], comparison_start_col, "环比")
+            rebuild_template_header_merges(block)
 
             for offset, row in enumerate(range(block["data_start"], block["total_row"])):
                 store = stores[offset] if offset < len(stores) else None
@@ -5234,6 +5262,13 @@ def write_promotion_comparison_sheet_reference(
         ele_block = find_template_block("饿了么")
         if mt_block and ele_block:
             sync_template_header_style(mt_block, ele_block, 1 + period_width * 3)
+            # The lower block moves when the upper block gains or loses store
+            # rows. Openpyxl moves cell values but leaves merged ranges at their
+            # old coordinates, so remove those ranges before resizing and
+            # rebuild them after each block reaches its final position.
+            for merged in list(ws.merged_cells.ranges):
+                if merged.min_row >= ele_block["period_row"]:
+                    ws.unmerge_cells(str(merged))
 
         ok = fill_block("美团", "mt") and fill_block("饿了么", "ele")
         if ok:
