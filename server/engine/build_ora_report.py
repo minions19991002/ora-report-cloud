@@ -1387,7 +1387,15 @@ def _legacy_previous_period_sheet(prev_wb):
 def previous_period_sheet(prev_wb):
     if PREVIOUS_SHEET in prev_wb.sheetnames:
         return prev_wb[PREVIOUS_SHEET]
-    excluded = {"V2", "涓婃湡"}
+    # A current-period report can be supplied as the comparison workbook when
+    # only its template layout changed. In that case its dated page is the same
+    # period as the report being generated and the requested comparison data is
+    # stored in the workbook's 上期 sheet.
+    if CURRENT_SHEET in prev_wb.sheetnames:
+        for previous_title in ("上期", "涓婃湡"):
+            if previous_title in prev_wb.sheetnames:
+                return prev_wb[previous_title]
+    excluded = {"V2", "上期", "涓婃湡"}
     state_for = getattr(prev_wb, "sheet_state_for", None)
     visible_names = [
         name
@@ -1874,33 +1882,43 @@ def promotion_raw_metrics_for_period(
 
 
 def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code: dict[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-    mt_store = current_rows(
-        rename_columns_by_alias(read_excel("美团门店数据.xlsx"), MT_STORE_COLUMNS, source_name="美团门店数据.xlsx", required=["日期", "门店id"]),
-        "日期",
+    mt_store_source = rename_columns_by_alias(
+        read_excel("美团门店数据.xlsx"),
+        MT_STORE_COLUMNS,
+        source_name="美团门店数据.xlsx",
+        required=["日期", "门店id"],
     )
-    mt_store["_id"] = mt_store["门店id"].map(norm_id)
-    mt_store["code"] = assign_store_codes_from_source(
-        mt_store,
+    mt_store_source["_id"] = mt_store_source["门店id"].map(norm_id)
+    mt_store_source["code"] = assign_store_codes_from_source(
+        mt_store_source,
         stores,
         mt_to_code,
         ele_to_code,
         name_cols=["门店名称", "店铺名称"],
     )
+    mt_store = current_rows(mt_store_source, "日期")
     mt_store = mt_store[mt_store["code"].notna()].copy()
+    mt_store_previous = period_rows(mt_store_source, "日期", PREV_START, PREV_END)
+    mt_store_previous = mt_store_previous[mt_store_previous["code"].notna()].copy()
 
-    ele_store = current_rows(
-        rename_columns_by_alias(read_excel("饿了么门店数据.xlsx"), ELE_STORE_COLUMNS, source_name="饿了么门店数据.xlsx", required=["日期", "门店编号"]),
-        "日期",
+    ele_store_source = rename_columns_by_alias(
+        read_excel("饿了么门店数据.xlsx"),
+        ELE_STORE_COLUMNS,
+        source_name="饿了么门店数据.xlsx",
+        required=["日期", "门店编号"],
     )
-    ele_store["_id"] = ele_store["门店编号"].map(norm_id)
-    ele_store["code"] = assign_store_codes_from_source(
-        ele_store,
+    ele_store_source["_id"] = ele_store_source["门店编号"].map(norm_id)
+    ele_store_source["code"] = assign_store_codes_from_source(
+        ele_store_source,
         stores,
         ele_to_code,
         mt_to_code,
         name_cols=["门店名称", "店铺名称"],
     )
+    ele_store = current_rows(ele_store_source, "日期")
     ele_store = ele_store[ele_store["code"].notna()].copy()
+    ele_store_previous = period_rows(ele_store_source, "日期", PREV_START, PREV_END)
+    ele_store_previous = ele_store_previous[ele_store_previous["code"].notna()].copy()
 
     days_orders: dict[tuple[str, pd.Timestamp], float] = defaultdict(float)
     for _, row in mt_store.iterrows():
@@ -1943,6 +1961,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         df: pd.DataFrame,
         rate_col: str,
         *,
+        target_end: pd.Timestamp = END,
         order_people_col: str | None = None,
         repeat_people_col: str | None = None,
     ) -> dict[str, dict[str, float | None]]:
@@ -1950,7 +1969,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         result: dict[str, dict[str, float | None]] = {}
         if rate_col not in df.columns:
             return result
-        final_day = df[df["_date"].dt.normalize().eq(END.normalize())].copy()
+        final_day = df[df["_date"].dt.normalize().eq(target_end.normalize())].copy()
         for code, group in final_day.sort_values("_date").groupby("code"):
             row = group.tail(1).iloc[0]
             rate = pct(row.get(rate_col))
@@ -1971,6 +1990,18 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     ele_repeat = final_day_repeat_metrics(
         ele_store,
         "近30日复购率",
+        repeat_people_col="近30日复购人数",
+    )
+    mt_previous_repeat = final_day_repeat_metrics(
+        mt_store_previous,
+        "复购率",
+        target_end=PREV_END,
+        order_people_col="下单人数",
+    )
+    ele_previous_repeat = final_day_repeat_metrics(
+        ele_store_previous,
+        "近30日复购率",
+        target_end=PREV_END,
         repeat_people_col="近30日复购人数",
     )
 
@@ -2178,6 +2209,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "repeat_rate": mt_repeat_values.get("repeat_rate"),
                 "repeat_people": mt_repeat_values.get("repeat_people", 0.0),
                 "repeat_order_people": mt_repeat_values.get("repeat_order_people", 0.0),
+                "previous_repeat_rate": mt_previous_repeat.get(code, {}).get("repeat_rate"),
                 "exp_count": mt_exp_count,
                 "paid_exp": mt_paid_exp,
                 "ad_share": safe_div(mt_paid_exp, mt_exp_count),
@@ -2211,6 +2243,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "repeat_rate": ele_repeat_values.get("repeat_rate"),
                 "repeat_people": ele_repeat_values.get("repeat_people", 0.0),
                 "repeat_order_people": ele_repeat_values.get("repeat_order_people", 0.0),
+                "previous_repeat_rate": ele_previous_repeat.get(code, {}).get("repeat_rate"),
                 "exp_count": ele_exp_count,
                 "paid_exp": ele_paid_exp,
                 "ad_share": safe_div(ele_paid_exp, ele_exp_count),
@@ -2265,7 +2298,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal: dict[str, float] = defaultdict(float)
         for code in [s.code for s in stores]:
             for key, value in metrics[code][scope].items():
-                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "repeat_rate", "ad_share", "ad_roi", "ad_bid", "avg_ad_spend", "ad_activity", "ad_gmv_share", "score"}:
+                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "repeat_rate", "previous_repeat_rate", "ad_share", "ad_roi", "ad_bid", "avg_ad_spend", "ad_activity", "ad_gmv_share", "score"}:
                     continue
                 if isinstance(value, (int, float)):
                     subtotal[key] += float(value)
@@ -2295,6 +2328,11 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal["entry_rate"] = safe_div(entry_sum, subtotal["exp_people"])
         subtotal["order_rate"] = safe_div(buyer_sum, entry_sum)
         subtotal["repeat_rate"] = safe_div(subtotal.get("repeat_people", 0.0), subtotal.get("repeat_order_people", 0.0))
+        previous_repeat = mt_previous_repeat if scope == "mt" else ele_previous_repeat
+        subtotal["previous_repeat_rate"] = safe_div(
+            sum(scalar_num(item.get("repeat_people")) for item in previous_repeat.values()),
+            sum(scalar_num(item.get("repeat_order_people")) for item in previous_repeat.values()),
+        )
         subtotal["ad_share"] = safe_div(subtotal["paid_exp"], subtotal["exp_count"])
         subtotal["ad_roi"] = safe_div(subtotal["ad_orig"], subtotal["ad_spend"])
         subtotal["ad_bid"] = safe_div(subtotal.get("ad_spend", 0.0), subtotal.get("ad_visits", 0.0))
@@ -2774,7 +2812,8 @@ def compact_period_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]] 
     mt_anchor = first_header_col(sheet, op_row, ["美团Sales_日均"], exact=True)
     ele_anchor = first_header_col(sheet, op_row, ["饿了么Sales_日均"], exact=True)
     mini_anchor = first_header_col(sheet, op_row, ["小程序Sales_日均"], exact=True)
-    if not all((total_anchor, mt_anchor, ele_anchor, mini_anchor)):
+    compact_marker = first_header_col(sheet, op_row, ["订单环比%", "折扣率环比%"], exact=True)
+    if not all((total_anchor, mt_anchor, ele_anchor, mini_anchor, compact_marker)):
         return None
 
     def col(row: int, names: list[str], start: int, end: int, exact: bool = True) -> int | None:
@@ -2983,7 +3022,10 @@ def write_main_sheet_compact(wb, prev_wb, stores: list[Store], metrics: dict[str
             put(row, cols_map.get("exp_growth"), growth(values.get("exp_people_daily"), prev_metric("流量数据", scope, "exp_people_daily", prev_row)), "0.0%")
             for key, delta_key in (("entry_rate", "entry_delta"), ("order_rate", "order_delta"), ("repeat_rate", "repeat_delta")):
                 put(row, cols_map.get(key), values.get(key), "0.0%")
-                put(row, cols_map.get(delta_key), diff(values.get(key), prev_metric("流量数据", scope, key, prev_row)), "0.0%")
+                previous_value = prev_metric("流量数据", scope, key, prev_row)
+                if key == "repeat_rate" and previous_value is None:
+                    previous_value = values.get("previous_repeat_rate")
+                put(row, cols_map.get(delta_key), diff(values.get(key), previous_value), "0.0%")
 
     traffic_total = find_section_total_row(ws, "流量数据", 57)
     prev_traffic_total = find_section_total_row(prev, "流量数据", 39)
