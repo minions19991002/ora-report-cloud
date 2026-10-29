@@ -701,15 +701,19 @@ def append_missing_store_rows(
     **identity_kwargs,
 ) -> int:
     inserted = 0
+    existing_rows = sorted(set(by_code.values()) | set(by_name.values()))
+    # Use an interior store row as the style source. The final template row may
+    # carry a closing bottom border, which must not be repeated on every newly
+    # appended store.
+    template_row = existing_rows[len(existing_rows) // 2] if existing_rows else max(insert_at - 1, 1)
     for store in stores:
         if matched_row_by_store(store, by_code, by_name):
             continue
-        src_row = max(insert_at - 1, 1)
         for merged in list(ws.merged_cells.ranges):
             if merged.min_row <= insert_at <= merged.max_row:
                 ws.unmerge_cells(str(merged))
         ws.insert_rows(insert_at)
-        copy_row_template(ws, src_row, insert_at, ws.max_column)
+        copy_row_template(ws, template_row, insert_at, ws.max_column)
         set_store_identity(ws, insert_at, store, code_col, name_col, **identity_kwargs)
         by_code[store.code] = insert_at
         by_name[norm_store_name(store.name)] = insert_at
@@ -964,9 +968,21 @@ def ensure_report_store_rows(wb, stores: list[Store]) -> None:
     ensure_section_store_rows(v2, "客单折扣", stores, 23, 38, 1, 2)
     ensure_section_store_rows(v2, "流量数据", stores, 43, 58, 1, 2)
     ensure_section_store_rows(v2, "推广数据", stores, 64, 79, 1, 2)
+    # These total labels are merged across the store identity columns in the
+    # template. Row insertion requires temporarily removing merges, so restore
+    # them at their new dynamic positions after all store rows are expanded.
+    for title in ("业绩", "客单折扣", "推广数据"):
+        total_row = find_section_total_row_or_none(v2, title)
+        if total_row:
+            v2.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=2)
     score_header = find_v2_score_header(v2)
     if score_header:
         ensure_fixed_block_store_rows(v2, stores, score_header + 1, score_header + 16, 1, 2)
+        score_start = score_header + 1
+        score_end = contiguous_store_end(v2, score_start, max(v2.max_row or score_start, score_start), 1, 2)
+        regular_row = score_start + 1 if score_start + 1 <= score_end else score_start
+        for row in range(score_start + 1, score_end + 1):
+            copy_row_style(v2, regular_row, row, v2.max_column)
 
     dist = wb["订单距离及实付区间"]
     ensure_titled_store_rows(dist, ["订单距离分布"], stores, 5, 20, 2, 1)
