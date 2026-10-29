@@ -1057,6 +1057,7 @@ MT_STORE_COLUMNS = {
     "顾客实付": ["顾客实付", "顾客实付总额"],
     "平台活动补贴": ["平台活动补贴"],
     "综合体验分": ["综合体验分", "门店评分", "店铺评分"],
+    "复购率": ["复购率", "复购率(%)", "复购率（%）"],
 }
 ELE_STORE_COLUMNS = {
     "日期": ["date", "date_id", "统计日期"],
@@ -1076,6 +1077,8 @@ ELE_STORE_COLUMNS = {
     "饿了么补贴": ["饿了么补贴"],
     "代理商补贴": ["代理商补贴"],
     "店铺评分": ["店铺评分", "门店评分", "综合体验分"],
+    "近30日复购率": ["近30日复购率", "近30天复购率", "30日复购率"],
+    "近30日复购人数": ["近30日复购人数", "近30天复购人数", "30日复购人数"],
 }
 PROMO_COMMON_COLUMNS = {
     "日期": ["date", "date_id", "统计日期"],
@@ -1620,7 +1623,9 @@ def apply_score_formatting(wb) -> None:
         if sheet_name not in wb.sheetnames:
             continue
         ws = wb[sheet_name]
-        format_score_cells(ws, score_rows(ws), [4, 14, 24])
+        header_row = section_header(ws, "门店评分")
+        score_cols = header_cols(ws, header_row, ["总评分", "美团评分", "饿了么评分"], exact=True)
+        format_score_cells(ws, score_rows(ws), score_cols or [4, 14, 24])
 
     if "V2" in wb.sheetnames:
         ws = wb["V2"]
@@ -1934,6 +1939,41 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
     for code, group in ele_store.sort_values("_date").groupby("code"):
         ele_score[code] = float(to_num(group.tail(1)["店铺评分"]).iloc[0])
 
+    def final_day_repeat_metrics(
+        df: pd.DataFrame,
+        rate_col: str,
+        *,
+        order_people_col: str | None = None,
+        repeat_people_col: str | None = None,
+    ) -> dict[str, dict[str, float | None]]:
+        """Use only the selected period's final calendar day for repeat rate."""
+        result: dict[str, dict[str, float | None]] = {}
+        if rate_col not in df.columns:
+            return result
+        final_day = df[df["_date"].dt.normalize().eq(END.normalize())].copy()
+        for code, group in final_day.sort_values("_date").groupby("code"):
+            row = group.tail(1).iloc[0]
+            rate = pct(row.get(rate_col))
+            if repeat_people_col:
+                repeat_people = scalar_num(row.get(repeat_people_col))
+                order_people = safe_div(repeat_people, rate)
+            else:
+                order_people = float(to_num(group[order_people_col]).sum()) if order_people_col in group else 0.0
+                repeat_people = rate * order_people
+            result[str(code)] = {
+                "repeat_rate": rate,
+                "repeat_people": repeat_people,
+                "repeat_order_people": order_people,
+            }
+        return result
+
+    mt_repeat = final_day_repeat_metrics(mt_store, "复购率", order_people_col="下单人数")
+    ele_repeat = final_day_repeat_metrics(
+        ele_store,
+        "近30日复购率",
+        repeat_people_col="近30日复购人数",
+    )
+
     mt_promo = current_rows(
         rename_columns_by_alias(
             read_excel("美团推广.xlsx", sheet_name="效果数据"),
@@ -2070,6 +2110,8 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         ele_ad_orders = epr.get("推广订单数", 0.0)
         mt_ad_gmv_base = mt.get("_ad_gmv_base", 0.0) if mt_has_ad_gmv_base else mt_sales
         ele_ad_gmv_base = el.get("_ad_gmv_base", 0.0) if ele_has_ad_gmv_base else ele_sales
+        mt_repeat_values = mt_repeat.get(code, {})
+        ele_repeat_values = ele_repeat.get(code, {})
 
         total_sales = total_op["sales"]
         total_discount = total_op["discount"]
@@ -2133,6 +2175,9 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "exp_people_daily": safe_div(mt_exp, den),
                 "entry_rate": safe_div(mt_entry, mt_exp),
                 "order_rate": safe_div(mt_buyers, mt_entry),
+                "repeat_rate": mt_repeat_values.get("repeat_rate"),
+                "repeat_people": mt_repeat_values.get("repeat_people", 0.0),
+                "repeat_order_people": mt_repeat_values.get("repeat_order_people", 0.0),
                 "exp_count": mt_exp_count,
                 "paid_exp": mt_paid_exp,
                 "ad_share": safe_div(mt_paid_exp, mt_exp_count),
@@ -2163,6 +2208,9 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
                 "exp_people_daily": safe_div(ele_exp, den),
                 "entry_rate": safe_div(ele_entry, ele_exp),
                 "order_rate": safe_div(ele_buyers, ele_entry),
+                "repeat_rate": ele_repeat_values.get("repeat_rate"),
+                "repeat_people": ele_repeat_values.get("repeat_people", 0.0),
+                "repeat_order_people": ele_repeat_values.get("repeat_order_people", 0.0),
                 "exp_count": ele_exp_count,
                 "paid_exp": ele_paid_exp,
                 "ad_share": safe_div(ele_paid_exp, ele_exp_count),
@@ -2217,7 +2265,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
         subtotal: dict[str, float] = defaultdict(float)
         for code in [s.code for s in stores]:
             for key, value in metrics[code][scope].items():
-                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "ad_share", "ad_roi", "ad_bid", "avg_ad_spend", "ad_activity", "ad_gmv_share", "score"}:
+                if key in {"sales_daily", "discount_rate", "orders_daily", "at", "exp_people_daily", "entry_rate", "order_rate", "repeat_rate", "ad_share", "ad_roi", "ad_bid", "avg_ad_spend", "ad_activity", "ad_gmv_share", "score"}:
                     continue
                 if isinstance(value, (int, float)):
                     subtotal[key] += float(value)
@@ -2246,6 +2294,7 @@ def compute_metrics(stores: list[Store], mt_to_code: dict[str, str], ele_to_code
             buyer_sum = sum(mt_ag.get(s.code, {}).get("下单人数", 0.0) + ele_ag.get(s.code, {}).get("下单人数", 0.0) for s in stores)
         subtotal["entry_rate"] = safe_div(entry_sum, subtotal["exp_people"])
         subtotal["order_rate"] = safe_div(buyer_sum, entry_sum)
+        subtotal["repeat_rate"] = safe_div(subtotal.get("repeat_people", 0.0), subtotal.get("repeat_order_people", 0.0))
         subtotal["ad_share"] = safe_div(subtotal["paid_exp"], subtotal["exp_count"])
         subtotal["ad_roi"] = safe_div(subtotal["ad_orig"], subtotal["ad_spend"])
         subtotal["ad_bid"] = safe_div(subtotal.get("ad_spend", 0.0), subtotal.get("ad_visits", 0.0))
@@ -2718,8 +2767,275 @@ def compute_delivery(mt_to_code: dict[str, str], ele_to_code: dict[str, str]) ->
     return mt_delivery, ele_delivery
 
 
+def compact_period_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]] | None:
+    """Resolve the redesigned compact period page by section labels and headers."""
+    op_row = find_section_header_row(sheet, "营业数据", 3, 2, 3)
+    total_anchor = first_header_col(sheet, op_row, ["总sales"], exact=True)
+    mt_anchor = first_header_col(sheet, op_row, ["美团Sales_日均"], exact=True)
+    ele_anchor = first_header_col(sheet, op_row, ["饿了么Sales_日均"], exact=True)
+    mini_anchor = first_header_col(sheet, op_row, ["小程序Sales_日均"], exact=True)
+    if not all((total_anchor, mt_anchor, ele_anchor, mini_anchor)):
+        return None
+
+    def col(row: int, names: list[str], start: int, end: int, exact: bool = True) -> int | None:
+        return first_header_col(sheet, row, names, start, end, exact)
+
+    def cols(row: int, names: list[str], start: int, end: int, exact: bool = True) -> list[int]:
+        return header_cols(sheet, row, names, start, end, exact)
+
+    op_ranges = {
+        "total": (total_anchor, mt_anchor - 1),
+        "mt": (mt_anchor, ele_anchor - 1),
+        "ele": (ele_anchor, mini_anchor - 1),
+        "mini": (mini_anchor, sheet.max_column or mini_anchor),
+    }
+    schema: dict[str, dict[str, dict[str, int | None]]] = {"营业数据": {}, "流量数据": {}, "推广数据": {}, "门店评分": {}}
+
+    total_start, total_end = op_ranges["total"]
+    schema["营业数据"]["total"] = {
+        "sales": total_anchor,
+        "sales_daily": col(op_row, ["Sales_日均"], total_start, total_end, exact=True),
+        "sales_growth": col(op_row, ["周环比%"], total_start, total_end, exact=True),
+        "orders_daily": col(op_row, ["ADT_日均"], total_start, total_end, exact=True),
+        "orders_growth": col(op_row, ["订单环比%"], total_start, total_end, exact=True),
+        "at": col(op_row, ["AT"], total_start, total_end, exact=True),
+        "at_delta": col(op_row, ["AT环比%"], total_start, total_end, exact=True),
+    }
+    for scope in ("mt", "ele"):
+        start, end = op_ranges[scope]
+        week_cols = cols(op_row, ["周环比%"], start, end, exact=True)
+        schema["营业数据"][scope] = {
+            "sales_daily": start,
+            "sales_growth": week_cols[0] if len(week_cols) > 0 else None,
+            "discount_rate": col(op_row, ["折扣率"], start, end, exact=True),
+            "discount_delta": col(op_row, ["折扣率环比%"], start, end, exact=True),
+            "orders_daily": col(op_row, ["ADT_日均"], start, end, exact=True),
+            "orders_growth": week_cols[1] if len(week_cols) > 1 else None,
+            "at": col(op_row, ["AT"], start, end, exact=True),
+            "at_delta": week_cols[2] if len(week_cols) > 2 else None,
+        }
+    start, end = op_ranges["mini"]
+    mini_growth = cols(op_row, ["周同比增长"], start, end, exact=False)
+    schema["营业数据"]["mini"] = {
+        "sales_daily": start,
+        "sales_growth": mini_growth[0] if len(mini_growth) > 0 else None,
+        "discount_rate": col(op_row, ["折扣率"], start, end, exact=True),
+        "discount_delta": col(op_row, ["折扣率环比%"], start, end, exact=True),
+        "orders_daily": col(op_row, ["ADT_日均"], start, end, exact=True),
+        "orders_growth": mini_growth[1] if len(mini_growth) > 1 else None,
+        "at": col(op_row, ["AT"], start, end, exact=True),
+        "at_delta": mini_growth[2] if len(mini_growth) > 2 else None,
+    }
+
+    traffic_row = find_section_header_row(sheet, "流量数据", 32, 2, 3)
+    mt_traffic = first_header_col(sheet, traffic_row, ["美团曝光人数_日均"], exact=True)
+    ele_traffic = first_header_col(sheet, traffic_row, ["饿了么曝光人数_日均"], exact=True)
+    if mt_traffic and ele_traffic:
+        for scope, start, end in (
+            ("mt", mt_traffic, ele_traffic - 1),
+            ("ele", ele_traffic, sheet.max_column or ele_traffic),
+        ):
+            week_cols = cols(traffic_row, ["周环比%"], start, end, exact=True)
+            schema["流量数据"][scope] = {
+                "exp_people_daily": start,
+                "exp_growth": week_cols[0] if len(week_cols) > 0 else None,
+                "entry_rate": col(traffic_row, ["进店转化率"], start, end, exact=True),
+                "entry_delta": week_cols[1] if len(week_cols) > 1 else None,
+                "order_rate": col(traffic_row, ["下单转化率"], start, end, exact=True),
+                "order_delta": week_cols[2] if len(week_cols) > 2 else None,
+                "repeat_rate": col(traffic_row, ["复购率"], start, end, exact=True),
+                "repeat_delta": week_cols[3] if len(week_cols) > 3 else None,
+            }
+
+    promo_row = find_section_header_row(sheet, "推广数据", 61, 2, 3)
+    mt_promo = first_header_col(sheet, promo_row, ["美团推广消耗", "美团推广曝光次数"], exact=True)
+    ele_promo = first_header_col(sheet, promo_row, ["饿了么推广消耗", "饿了么推广曝光次数"], exact=True)
+    if mt_promo and ele_promo:
+        for scope, start, end in (
+            ("mt", mt_promo, ele_promo - 1),
+            ("ele", ele_promo, sheet.max_column or ele_promo),
+        ):
+            schema["推广数据"][scope] = {
+                "ad_spend": col(promo_row, ["美团推广消耗", "饿了么推广消耗", "消耗金额"], start, end, exact=True),
+                "spend_growth": col(promo_row, ["消耗环比%"], start, end, exact=True),
+                "ad_orig": col(promo_row, ["推广GMV"], start, end, exact=True),
+                "gmv_growth": col(promo_row, ["GMV环比%"], start, end, exact=True),
+                "ad_roi": col(promo_row, PROMO_ROI_ALIASES, start, end, exact=False),
+                "roi_delta": col(promo_row, ["周环比%"], start, end, exact=True),
+                "ad_gmv_share": col(promo_row, ["广告GMV占比"], start, end, exact=True),
+            }
+
+    score_row = find_section_header_row(sheet, "门店评分", 90, 2, 3)
+    schema["门店评分"]["mt"] = {
+        "score": col(score_row, ["美团评分"], 1, sheet.max_column or 1, exact=True),
+        "good": col(score_row, ["好评数"], 1, (first_header_col(sheet, score_row, ["饿了么评分"], exact=True) or (sheet.max_column or 1)) - 1, exact=True),
+        "bad": col(score_row, ["中差评"], 1, (first_header_col(sheet, score_row, ["饿了么评分"], exact=True) or (sheet.max_column or 1)) - 1, exact=True),
+    }
+    ele_score_anchor = first_header_col(sheet, score_row, ["饿了么评分"], exact=True)
+    schema["门店评分"]["ele"] = {
+        "score": ele_score_anchor,
+        "good": col(score_row, ["好评数"], ele_score_anchor or 1, sheet.max_column or 1, exact=True),
+        "bad": col(score_row, ["中差评"], ele_score_anchor or 1, sheet.max_column or 1, exact=True),
+    }
+    return schema
+
+
+def legacy_period_value_schema() -> dict[str, dict[str, dict[str, int | None]]]:
+    return {
+        "营业数据": {
+            "total": {"sales_daily": 4, "sales": 5, "discount_rate": 8, "orders_daily": 9, "orders": 10, "at": 11},
+            "mt": {"sales_daily": 14, "sales": 15, "discount_rate": 18, "orders_daily": 19, "orders": 20, "at": 21},
+            "ele": {"sales_daily": 24, "sales": 25, "discount_rate": 28, "orders_daily": 29, "orders": 30, "at": 31},
+            "mini": {"sales_daily": 43, "sales": 44, "discount_rate": 47, "orders_daily": 48, "orders": 49, "at": 50},
+        },
+        "流量数据": {
+            "mt": {"exp_people_daily": 14, "entry_rate": 17, "order_rate": 19},
+            "ele": {"exp_people_daily": 24, "entry_rate": 27, "order_rate": 29},
+        },
+        "推广数据": {
+            "mt": {"ad_spend": 17, "ad_roi": 19, "ad_orig": 20, "ad_gmv_share": 21},
+            "ele": {"ad_spend": 27, "ad_roi": 29, "ad_orig": 30, "ad_gmv_share": 31},
+        },
+        "门店评分": {
+            "mt": {"score": 14, "good": 16, "bad": 17},
+            "ele": {"score": 24, "good": 26, "bad": 27},
+        },
+    }
+
+
+def period_value_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]]:
+    return compact_period_schema(sheet) or legacy_period_value_schema()
+
+
+def write_main_sheet_compact(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[str, Any]], totals: dict[str, Any]) -> None:
+    ws = wb[CURRENT_SHEET]
+    prev = previous_period_sheet(prev_wb)
+    schema = compact_period_schema(ws)
+    if schema is None:
+        raise RuntimeError("新版周期页表头识别失败")
+    prev_schema = period_value_schema(prev)
+
+    row_maps = {title: section_store_row_maps(ws, title, 3, 120) for title in ("营业数据", "流量数据", "推广数据", "门店评分")}
+    prev_row_maps = {title: section_store_row_maps(prev, title, 3, 120) for title in ("营业数据", "流量数据", "推广数据", "门店评分")}
+
+    def prev_metric(title: str, scope: str, key: str, row: int | None) -> Any:
+        col_idx = prev_schema.get(title, {}).get(scope, {}).get(key)
+        return get_prev(prev, row, col_idx) if row and col_idx else None
+
+    def put(row: int, col_idx: int | None, value: Any, fmt: str | None = None) -> None:
+        if not col_idx:
+            return
+        write(ws.cell(row, col_idx), value)
+        if fmt:
+            ws.cell(row, col_idx).number_format = fmt
+
+    prev_open_dates: dict[str, date] = {}
+    for store in stores:
+        prev_row = matched_row_by_store(store, *prev_row_maps["营业数据"])
+        if prev_row:
+            parsed = parse_open_date_value(prev.cell(prev_row, 1).value)
+            if parsed:
+                prev_open_dates[store.code] = parsed
+
+    def write_operating(row: int, data: dict[str, Any], prev_row: int | None) -> None:
+        for scope in ("total", "mt", "ele", "mini"):
+            cols_map = schema["营业数据"].get(scope, {})
+            values = data[scope]
+            put(row, cols_map.get("sales"), values.get("sales"), "#,##0")
+            put(row, cols_map.get("sales_daily"), values.get("sales_daily"), "#,##0")
+            base_key = "sales" if cols_map.get("sales") else "sales_daily"
+            put(row, cols_map.get("sales_growth"), growth(values.get(base_key), prev_metric("营业数据", scope, base_key, prev_row)), "0.0%")
+            put(row, cols_map.get("discount_rate"), values.get("discount_rate"), "0.0%")
+            put(row, cols_map.get("discount_delta"), diff(values.get("discount_rate"), prev_metric("营业数据", scope, "discount_rate", prev_row)), "0.0%")
+            put(row, cols_map.get("orders_daily"), values.get("orders_daily"), "#,##0")
+            put(row, cols_map.get("orders_growth"), growth(values.get("orders_daily"), prev_metric("营业数据", scope, "orders_daily", prev_row)), "0.0%")
+            put(row, cols_map.get("at"), values.get("at"), "0.00")
+            put(row, cols_map.get("at_delta"), diff(values.get("at"), prev_metric("营业数据", scope, "at", prev_row)), "0.0")
+
+    for store in stores:
+        row = matched_row_by_store(store, *row_maps["营业数据"])
+        if not row:
+            continue
+        open_date = prev_open_dates.get(store.code) or metrics[store.code].get("open_date")
+        if open_date:
+            put(row, 1, open_date)
+            ws.cell(row, 1).number_format = "yyyy/m/d"
+        prev_row = matched_row_by_store(store, *prev_row_maps["营业数据"])
+        write_operating(row, metrics[store.code], prev_row)
+    operating_total = find_section_total_row(ws, "营业数据", 28)
+    prev_operating_total = find_section_total_row(prev, "营业数据", 19)
+    total_data = {scope: totals[scope] for scope in ("total", "mt", "ele", "mini")}
+    write_operating(operating_total, total_data, prev_operating_total)
+
+    def inherit_fields(title: str, row: int, prev_row: int | None, labels: list[str]) -> None:
+        cur_header = find_section_header_row(ws, title, row - 1, 2, 3)
+        prev_header = find_section_header_row(prev, title, row - 1, 2, 3)
+        for label in labels:
+            cur_col = first_header_col(ws, cur_header, [label], exact=True)
+            prev_col = first_header_col(prev, prev_header, [label], exact=True)
+            put(row, cur_col, get_prev(prev, prev_row, prev_col) if prev_row and prev_col else None)
+
+    def write_traffic(row: int, data: dict[str, Any], prev_row: int | None) -> None:
+        for scope in ("mt", "ele"):
+            cols_map = schema["流量数据"].get(scope, {})
+            values = data[scope]
+            put(row, cols_map.get("exp_people_daily"), values.get("exp_people_daily"), "#,##0")
+            put(row, cols_map.get("exp_growth"), growth(values.get("exp_people_daily"), prev_metric("流量数据", scope, "exp_people_daily", prev_row)), "0.0%")
+            for key, delta_key in (("entry_rate", "entry_delta"), ("order_rate", "order_delta"), ("repeat_rate", "repeat_delta")):
+                put(row, cols_map.get(key), values.get(key), "0.0%")
+                put(row, cols_map.get(delta_key), diff(values.get(key), prev_metric("流量数据", scope, key, prev_row)), "0.0%")
+
+    traffic_total = find_section_total_row(ws, "流量数据", 57)
+    prev_traffic_total = find_section_total_row(prev, "流量数据", 39)
+    for store in stores:
+        row = matched_row_by_store(store, *row_maps["流量数据"])
+        if not row:
+            continue
+        prev_row = matched_row_by_store(store, *prev_row_maps["流量数据"])
+        inherit_fields("流量数据", row, prev_row, ["起送价", "配送费", "红包", "折扣菜", "收藏有礼", "评价邀券"])
+        write_traffic(row, metrics[store.code], prev_row)
+    write_traffic(traffic_total, total_data, prev_traffic_total)
+
+    def write_promo(row: int, data: dict[str, Any], prev_row: int | None) -> None:
+        for scope in ("mt", "ele"):
+            cols_map = schema["推广数据"].get(scope, {})
+            values = data[scope]
+            put(row, cols_map.get("ad_spend"), values.get("ad_spend"), "#,##0")
+            put(row, cols_map.get("spend_growth"), growth(values.get("ad_spend"), prev_metric("推广数据", scope, "ad_spend", prev_row)), "0.0%")
+            put(row, cols_map.get("ad_orig"), values.get("ad_orig"), "#,##0")
+            put(row, cols_map.get("gmv_growth"), growth(values.get("ad_orig"), prev_metric("推广数据", scope, "ad_orig", prev_row)), "0.0%")
+            put(row, cols_map.get("ad_roi"), values.get("ad_roi"), "0.0")
+            put(row, cols_map.get("roi_delta"), diff(values.get("ad_roi"), prev_metric("推广数据", scope, "ad_roi", prev_row)), "0.0")
+            put(row, cols_map.get("ad_gmv_share"), values.get("ad_gmv_share"), "0.0%")
+
+    promo_total = find_section_total_row(ws, "推广数据", 86)
+    prev_promo_total = find_section_total_row(prev, "推广数据", 59)
+    for store in stores:
+        row = matched_row_by_store(store, *row_maps["推广数据"])
+        if not row:
+            continue
+        prev_row = matched_row_by_store(store, *prev_row_maps["推广数据"])
+        inherit_fields("推广数据", row, prev_row, ["美团推广计划", "饿了么推广计划"])
+        write_promo(row, metrics[store.code], prev_row)
+    write_promo(promo_total, total_data, prev_promo_total)
+
+    for store in stores:
+        row = matched_row_by_store(store, *row_maps["门店评分"])
+        if not row:
+            continue
+        for scope in ("mt", "ele"):
+            cols_map = schema["门店评分"].get(scope, {})
+            values = metrics[store.code][scope]
+            put(row, cols_map.get("score"), values.get("score"), "0.0")
+            put(row, cols_map.get("good"), values.get("good"), "#,##0")
+            put(row, cols_map.get("bad"), values.get("bad"), "#,##0")
+
+
 def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[str, Any]], totals: dict[str, Any]) -> None:
     ws = wb[CURRENT_SHEET]
+    if compact_period_schema(ws):
+        write_main_sheet_compact(wb, prev_wb, stores, metrics, totals)
+        return
     prev = previous_period_sheet(prev_wb)
 
     operating_row_by_code, operating_row_by_name = section_store_row_maps(ws, "营业数据", 3, 18)
@@ -3037,6 +3353,43 @@ def analysis_scope_ranges(anchor_cols: dict[str, int | None], max_col: int) -> d
 
 
 def resolve_analysis_schema(sheet) -> dict[str, dict[str, dict[str, int | None]]]:
+    compact = compact_period_schema(sheet)
+    if compact:
+        schema: dict[str, dict[str, dict[str, int | None]]] = {
+            "营业数据": {},
+            "流量数据": {},
+            "推广数据": {},
+            "门店评分": {},
+        }
+        for scope in ("total", "mt", "ele"):
+            op = compact["营业数据"].get(scope, {})
+            schema["营业数据"][scope] = {
+                "sales": op.get("sales"),
+                "sales_daily": op.get("sales_daily"),
+                "discount_rate": op.get("discount_rate"),
+                "orders": None,
+                "orders_daily": op.get("orders_daily"),
+                "at": op.get("at"),
+            }
+            traffic = compact["流量数据"].get(scope, {})
+            schema["流量数据"][scope] = {
+                "exp_people_daily": traffic.get("exp_people_daily"),
+                "exp_people": None,
+                "entry_rate": traffic.get("entry_rate"),
+                "order_rate": traffic.get("order_rate"),
+                "exp_count": None,
+            }
+            promo = compact["推广数据"].get(scope, {})
+            schema["推广数据"][scope] = {
+                "paid_exp": None,
+                "ad_spend": promo.get("ad_spend"),
+                "ad_visits": None,
+                "ad_roi": promo.get("ad_roi"),
+                "ad_orig": promo.get("ad_orig"),
+            }
+        schema["门店评分"]["total"] = {"bad": None}
+        return schema
+
     op_header = section_header(sheet, "营业数据")
     traffic_header = section_header(sheet, "流量数据")
     promo_header = section_header(sheet, "推广数据")
@@ -3125,13 +3478,24 @@ def read_analysis_record(
     traffic_cols = schema["流量数据"].get(scope, {})
     promo_cols = schema["推广数据"].get(scope, {})
     score_cols = schema["门店评分"].get("total", {})
+    period_days = PERIOD_DAYS if sheet.title == CURRENT_SHEET else int((PREV_END - PREV_START).days) + 1
+    sales = analysis_cell_num(sheet, op, op_cols.get("sales"))
+    if not op_cols.get("sales") and op_cols.get("sales_daily"):
+        sales = analysis_cell_num(sheet, op, op_cols.get("sales_daily")) * period_days
+    orders = analysis_cell_num(sheet, op, op_cols.get("orders"))
+    if not op_cols.get("orders") and op_cols.get("orders_daily"):
+        orders = analysis_cell_num(sheet, op, op_cols.get("orders_daily")) * period_days
+    exp_people_daily = analysis_cell_num(sheet, traffic, traffic_cols.get("exp_people_daily"))
+    exp_people = analysis_cell_num(sheet, traffic, traffic_cols.get("exp_people"))
+    if not traffic_cols.get("exp_people") and traffic_cols.get("exp_people_daily"):
+        exp_people = exp_people_daily * period_days
     return {
-        "sales": analysis_cell_num(sheet, op, op_cols.get("sales")),
+        "sales": sales,
         "discount_rate": analysis_cell_num(sheet, op, op_cols.get("discount_rate")),
-        "orders": analysis_cell_num(sheet, op, op_cols.get("orders")),
+        "orders": orders,
         "at": analysis_cell_num(sheet, op, op_cols.get("at")),
-        "exp_people_daily": analysis_cell_num(sheet, traffic, traffic_cols.get("exp_people_daily")),
-        "exp_people": analysis_cell_num(sheet, traffic, traffic_cols.get("exp_people")),
+        "exp_people_daily": exp_people_daily,
+        "exp_people": exp_people,
         "entry_rate": analysis_cell_num(sheet, traffic, traffic_cols.get("entry_rate")),
         "order_rate": analysis_cell_num(sheet, traffic, traffic_cols.get("order_rate")),
         "exp_count": analysis_cell_num(sheet, traffic, traffic_cols.get("exp_count")),
@@ -3423,7 +3787,22 @@ def analysis_total_rows(sheet) -> dict[str, int | None]:
 
 
 def read_records_for_rows(sheet, schema: dict[str, dict[str, dict[str, int | None]]], rows: dict[str, int | None]) -> dict[str, dict[str, float]]:
-    return {scope: read_analysis_record(sheet, schema, rows, scope) for scope in ("total", "mt", "ele")}
+    records = {scope: read_analysis_record(sheet, schema, rows, scope) for scope in ("total", "mt", "ele")}
+    if compact_period_schema(sheet):
+        mt = records["mt"]
+        ele = records["ele"]
+        total = records["total"]
+        total["exp_people_daily"] = mt["exp_people_daily"] + ele["exp_people_daily"]
+        total["exp_people"] = mt["exp_people"] + ele["exp_people"]
+        mt_entries = mt["exp_people_daily"] * mt["entry_rate"]
+        ele_entries = ele["exp_people_daily"] * ele["entry_rate"]
+        total_entries = mt_entries + ele_entries
+        total["entry_rate"] = safe_div(total_entries, total["exp_people_daily"]) or 0.0
+        total["order_rate"] = safe_div(mt_entries * mt["order_rate"] + ele_entries * ele["order_rate"], total_entries) or 0.0
+        total["ad_spend"] = mt["ad_spend"] + ele["ad_spend"]
+        total["ad_orig"] = mt["ad_orig"] + ele["ad_orig"]
+        total["ad_roi"] = safe_div(total["ad_orig"], total["ad_spend"]) or 0.0
+    return records
 
 
 def build_business_analysis_text(wb) -> str:
@@ -3487,15 +3866,33 @@ def write_merged_text_area(ws, text: str, start_row: int, start_col: int, end_co
                 or merged.max_col < start_col
                 or merged.min_col > end_col
             ):
-                ws.unmerge_cells(str(merged))
+                try:
+                    ws.unmerge_cells(str(merged))
+                except KeyError:
+                    # Row insertion/deletion can leave stale MergedCell objects
+                    # behind in large template text areas. Remove the range and
+                    # rebuild those cells as normal cells before writing.
+                    try:
+                        ws.merged_cells.ranges.remove(merged)
+                    except KeyError:
+                        pass
+                    for row_idx in range(merged.min_row, merged.max_row + 1):
+                        for col_idx in range(merged.min_col, merged.max_col + 1):
+                            if row_idx == merged.min_row and col_idx == merged.min_col:
+                                continue
+                            existing = ws._cells.get((row_idx, col_idx))
+                            if existing is not None and type(existing).__name__ == "MergedCell":
+                                del ws._cells[(row_idx, col_idx)]
 
     unmerge_overlapping()
     for row in range(start_row, end_row + 1):
         ws.row_dimensions[row].height = 24
         for col in range(start_col, end_col + 1):
+            existing = ws._cells.get((row, col))
+            if existing is not None and type(existing).__name__ == "MergedCell":
+                del ws._cells[(row, col)]
             cell = ws.cell(row, col)
-            if type(cell).__name__ != "MergedCell":
-                cell.value = None
+            cell.value = None
     unmerge_overlapping()
     ws.merge_cells(start_row=start_row, start_column=start_col, end_row=end_row, end_column=end_col)
     cell = ws.cell(start_row, start_col)
@@ -3510,7 +3907,22 @@ def write_business_analysis(wb) -> None:
         text = "整体：本期与上期核心经营数据暂无可比变化。"
     score_end = section_last_store_row(ws, "门店评分")
     start_row = max(score_end + 2, 81)
-    write_merged_text_area(ws, text, start_row, 4, 12, min_rows=20)
+    is_compact = compact_period_schema(ws) is not None
+    end_col = 10 if is_compact else 12
+    min_rows = 20
+    merged_candidates = [
+        merged
+        for merged in list(ws.merged_cells.ranges)
+        if merged.min_col <= 4 <= merged.max_col
+        and merged.max_col >= end_col
+        and merged.min_row > score_end
+    ]
+    if merged_candidates:
+        merged = min(merged_candidates, key=lambda item: (item.min_row, -item.max_row))
+        start_row = merged.min_row
+        end_col = merged.max_col
+        min_rows = max(min_rows, merged.max_row - merged.min_row + 1)
+    write_merged_text_area(ws, text, start_row, 4, end_col, min_rows=min_rows)
 
 
 def email_change_word(value: float) -> str:
@@ -3529,12 +3941,12 @@ def email_pct_phrase(value: float | None) -> str:
 
 def current_score_bad_total(sheet) -> float:
     score_header = section_header(sheet, "门店评分")
-    bad_col = scoped_header_col(sheet, score_header, {"total": (1, sheet.max_column or 1)}, "total", ["中差评"], exact=True)
-    if not bad_col:
+    bad_cols = header_cols(sheet, score_header, ["中差评"], exact=True)
+    if not bad_cols:
         return 0.0
     by_code, by_name = section_rows_for_analysis(sheet, "门店评分")
     rows = sorted(set(by_code.values()) | set(by_name.values()))
-    return sum(analysis_cell_num(sheet, row, bad_col) for row in rows)
+    return sum(analysis_cell_num(sheet, row, col) for row in rows for col in bad_cols)
 
 
 def build_performance_email_text(wb) -> str:
@@ -3597,10 +4009,130 @@ def write_email_content_sheet(wb) -> None:
     ws.sheet_state = "hidden"
 
 
-def write_v2(wb, stores: list[Store]) -> None:
+def write_v2_compact(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[str, Any]], totals: dict[str, Any]) -> None:
+    ws = wb["V2"]
+    prev_period = previous_period_sheet(prev_wb)
+    prev_schema = period_value_schema(prev_period)
+    prev_period_maps = {title: section_store_row_maps(prev_period, title, 3, 120) for title in ("营业数据", "流量数据", "推广数据", "门店评分")}
+    prev_v2 = prev_wb["V2"] if "V2" in prev_wb.sheetnames else None
+
+    v2_maps = {
+        "业绩": section_store_row_maps(ws, "业绩", 3, 40, 1, 2),
+        "客单折扣": section_store_row_maps(ws, "客单折扣", 23, 60, 1, 2),
+        "流量数据": section_store_row_maps(ws, "流量数据", 43, 85, 1, 2),
+        "推广数据": section_store_row_maps(ws, "推广数据", 64, 110, 1, 2),
+    }
+    prev_v2_maps = {
+        title: section_store_row_maps(prev_v2, title, start, end, 1, 2) if prev_v2 else ({}, {})
+        for title, start, end in (("业绩", 3, 40), ("客单折扣", 23, 60), ("流量数据", 43, 85), ("推广数据", 64, 110))
+    }
+
+    score_header = find_v2_score_header(ws)
+    score_start = (score_header + 1) if score_header else 85
+    score_end = contiguous_store_end(ws, score_start, max(ws.max_row or score_start, score_start), 1, 2)
+    score_maps = sheet_store_row_maps(ws, score_start, max(score_end, score_start - 1), 1, 2)
+
+    def put(row: int, col: int, value: Any, fmt: str | None = None) -> None:
+        write(ws.cell(row, col), value)
+        if fmt:
+            ws.cell(row, col).number_format = fmt
+
+    def previous_period_value(store: Store | None, scope: str, key: str) -> Any:
+        row = find_section_total_row(prev_period, "营业数据", 19) if store is None else matched_row_by_store(store, *prev_period_maps["营业数据"])
+        col = prev_schema.get("营业数据", {}).get(scope, {}).get(key)
+        return get_prev(prev_period, row, col) if row and col else None
+
+    def previous_v2_value(title: str, store: Store | None, col: int) -> Any:
+        if not prev_v2:
+            return None
+        if store is None:
+            row = find_section_total_row(prev_v2, title, 19)
+        else:
+            row = matched_row_by_store(store, *prev_v2_maps[title])
+        return get_prev(prev_v2, row, col) if row else None
+
+    def write_performance(row: int, data: dict[str, Any], store: Store | None) -> None:
+        put(row, 3, data["total"].get("sales_daily"), "#,##0")
+        put(row, 4, growth(data["total"].get("sales_daily"), previous_period_value(store, "total", "sales_daily")), "0.0%")
+        put(row, 5, growth(data["mt"].get("sales_daily"), previous_period_value(store, "mt", "sales_daily")), "0.0%")
+        put(row, 6, growth(data["ele"].get("sales_daily"), previous_period_value(store, "ele", "sales_daily")), "0.0%")
+
+    for store in stores:
+        row = matched_row_by_store(store, *v2_maps["业绩"])
+        if row:
+            write_performance(row, metrics[store.code], store)
+    write_performance(find_section_total_row(ws, "业绩", 19), totals, None)
+
+    def write_discount(row: int, data: dict[str, Any], store: Store | None) -> None:
+        cur_at = data["total"].get("at")
+        cur_discount = data["total"].get("discount_rate")
+        prev_at = previous_period_value(store, "total", "at")
+        prev_discount = previous_period_value(store, "total", "discount_rate")
+        put(row, 3, cur_at, "0.00")
+        put(row, 4, diff(cur_at, prev_at), "0.0")
+        put(row, 5, cur_discount, "0.0%")
+        put(row, 6, diff(cur_discount, prev_discount), "0.0%")
+        put(row, 8, prev_discount, "0.0%")
+
+    for store in stores:
+        row = matched_row_by_store(store, *v2_maps["客单折扣"])
+        if row:
+            write_discount(row, metrics[store.code], store)
+    write_discount(find_section_total_row(ws, "客单折扣", 39), totals, None)
+
+    def write_traffic(row: int, data: dict[str, Any], store: Store | None) -> None:
+        total = data["total"]
+        prev_exp = previous_v2_value("流量数据", store, 3)
+        prev_entry = previous_v2_value("流量数据", store, 5)
+        prev_order = previous_v2_value("流量数据", store, 7)
+        put(row, 3, total.get("exp_people_daily"), "#,##0")
+        put(row, 4, growth(total.get("exp_people_daily"), prev_exp), "0.0%")
+        put(row, 5, total.get("entry_rate"), "0.0%")
+        put(row, 6, diff(total.get("entry_rate"), prev_entry), "0.0%")
+        put(row, 7, total.get("order_rate"), "0.0%")
+        put(row, 8, diff(total.get("order_rate"), prev_order), "0.0%")
+
+    for store in stores:
+        row = matched_row_by_store(store, *v2_maps["流量数据"])
+        if row:
+            write_traffic(row, metrics[store.code], store)
+    write_traffic(find_section_total_row(ws, "流量数据", 59), totals, None)
+
+    def write_promo(row: int, data: dict[str, Any]) -> None:
+        put(row, 3, data["mt"].get("ad_spend"), "#,##0")
+        put(row, 4, data["mt"].get("ad_roi"), "0.00")
+        put(row, 5, data["ele"].get("ad_spend"), "#,##0")
+        put(row, 6, data["ele"].get("ad_roi"), "0.00")
+
+    for store in stores:
+        row = matched_row_by_store(store, *v2_maps["推广数据"])
+        if row:
+            write_promo(row, metrics[store.code])
+    write_promo(find_section_total_row(ws, "推广数据", 80), totals)
+
+    for store in stores:
+        row = matched_row_by_store(store, *score_maps)
+        if not row:
+            continue
+        data = metrics[store.code]
+        for col, value, fmt in (
+            (3, data["mt"].get("score"), "0.0"),
+            (4, data["mt"].get("good"), "#,##0"),
+            (5, data["mt"].get("bad"), "#,##0"),
+            (6, data["ele"].get("score"), "0.0"),
+            (7, data["ele"].get("good"), "#,##0"),
+            (8, data["ele"].get("bad"), "#,##0"),
+        ):
+            put(row, col, value, fmt)
+
+
+def write_v2(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[str, Any]], totals: dict[str, Any]) -> None:
     ws = wb["V2"]
     sheet = CURRENT_SHEET
     cur_ws = wb[sheet]
+    if compact_period_schema(cur_ws):
+        write_v2_compact(wb, prev_wb, stores, metrics, totals)
+        return
     prev_ws = wb["上期"]
     cur_operating_total = find_section_total_row(cur_ws, "营业数据", 19)
     prev_operating_total = find_section_total_row(prev_ws, "营业数据", 19)
@@ -4825,13 +5357,11 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
     v2_ws = wb_formula["V2"]
     dist_ws = wb_formula["订单距离及实付区间"]
     current_codes = set()
-    for title, start, end in [("营业数据", 3, 18), ("流量数据", 23, 38), ("推广数据", 43, 58), ("门店评分", 63, 78)]:
-        current_codes.update(section_store_row_maps(cur_ws, title, start, end, 2, 3)[0].keys())
+    for title in ("营业数据", "流量数据", "推广数据", "门店评分"):
+        current_codes.update(section_store_row_maps(cur_ws, title, 3, cur_ws.max_row or 3, 2, 3)[0].keys())
     v2_codes = set()
-    for title, start, end in [("业绩", 3, 18), ("客单折扣", 23, 38), ("流量数据", 43, 58), ("推广数据", 64, 79)]:
-        v2_codes.update(section_store_row_maps(v2_ws, title, start, end, 1, 2)[0].keys())
-    score_end = contiguous_store_end(v2_ws, 85, max(v2_ws.max_row or 85, 85), 1, 2)
-    v2_codes.update(sheet_store_row_maps(v2_ws, 85, max(score_end, 84), 1, 2)[0].keys())
+    for title in ("业绩", "客单折扣", "流量数据", "推广数据", "门店评分"):
+        v2_codes.update(section_store_row_maps(v2_ws, title, 3, v2_ws.max_row or 3, 1, 2)[0].keys())
     distance_codes = set(titled_store_row_maps(dist_ws, ["订单距离分布"], 5, 20, 2, 1)[0].keys())
     distance_codes.update(titled_store_row_maps(dist_ws, ["实付区间订单占比"], 24, 39, 2, 1)[0].keys())
     validation["store_presence"][CURRENT_SHEET] = sorted(expected_codes - current_codes)
@@ -4839,12 +5369,21 @@ def validate_output(path: Path, stores: list[Store], metrics, totals, new_packag
     validation["store_presence"]["订单距离及实付区间"] = sorted(expected_codes - distance_codes)
     current_total_row = find_section_total_row(cur_ws, "营业数据", 19)
     promo_total_row = find_section_total_row(cur_ws, "推广数据", 59)
+    current_schema = period_value_schema(cur_ws)
+
+    def schema_cell(section: str, scope: str, key: str, row: int) -> Any:
+        col_idx = current_schema.get(section, {}).get(scope, {}).get(key)
+        return cur_ws.cell(row, col_idx).value if col_idx else None
+
     package_total_row = find_label_row(wb_formula["商品销售排行-套餐"], "总计", None, 1) or 9
     validation["key_cells"] = {
-        "current_total_sales": wb_formula[CURRENT_SHEET][f"E{current_total_row}"].value,
-        "current_total_orders": wb_formula[CURRENT_SHEET][f"J{current_total_row}"].value,
-        "current_mt_ad_spend": wb_formula[CURRENT_SHEET][f"Q{promo_total_row}"].value,
-        "current_ele_ad_spend": wb_formula[CURRENT_SHEET][f"AA{promo_total_row}"].value,
+        "current_total_sales": schema_cell("营业数据", "total", "sales", current_total_row),
+        "current_total_orders": (
+            schema_cell("营业数据", "total", "orders", current_total_row)
+            or schema_cell("营业数据", "total", "orders_daily", current_total_row)
+        ),
+        "current_mt_ad_spend": schema_cell("推广数据", "mt", "ad_spend", promo_total_row),
+        "current_ele_ad_spend": schema_cell("推广数据", "ele", "ad_spend", promo_total_row),
         "single_top_product": wb_formula["商品销售排行-单品"]["C2"].value,
         "package_total_qty": wb_formula["商品销售排行-套餐"][f"C{package_total_row}"].value,
         "complaint_total": wb_formula["用户体验-客诉"]["D17"].value,
@@ -4883,7 +5422,7 @@ def main() -> None:
     ensure_report_store_rows(wb, stores)
     write_main_sheet(wb, prev_wb, stores, metrics, totals)
     write_promotion_comparison_sheet_reference(wb, prev_wb, stores, mt_to_code, ele_to_code, metrics, totals)
-    write_v2(wb, stores)
+    write_v2(wb, prev_wb, stores, metrics, totals)
     write_distance_and_paid(wb, prev_wb, distance, paid, stores)
     write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg_qty, totals["biz_days"] or PERIOD_DAYS, new_packages)
     write_complaints(wb, prev_wb, complaints, complaint_top)
