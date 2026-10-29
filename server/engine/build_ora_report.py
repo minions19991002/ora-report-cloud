@@ -977,12 +977,25 @@ def ensure_report_store_rows(wb, stores: list[Store]) -> None:
             v2.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=2)
     score_header = find_v2_score_header(v2)
     if score_header:
+        template_score_start = score_header + 1
+        template_score_end = contiguous_store_end(
+            v2,
+            template_score_start,
+            max(v2.max_row or template_score_start, template_score_start),
+            1,
+            2,
+        )
+        closing_bottoms = [copy(v2.cell(template_score_end, col).border.bottom) for col in range(1, 9)]
         ensure_fixed_block_store_rows(v2, stores, score_header + 1, score_header + 16, 1, 2)
         score_start = score_header + 1
         score_end = contiguous_store_end(v2, score_start, max(v2.max_row or score_start, score_start), 1, 2)
         regular_row = score_start + 1 if score_start + 1 <= score_end else score_start
         for row in range(score_start + 1, score_end + 1):
             copy_row_style(v2, regular_row, row, v2.max_column)
+        for col, bottom in enumerate(closing_bottoms, start=1):
+            border = copy(v2.cell(score_end, col).border)
+            border.bottom = bottom
+            v2.cell(score_end, col).border = border
 
     dist = wb["订单距离及实付区间"]
     ensure_titled_store_rows(dist, ["订单距离分布"], stores, 5, 20, 2, 1)
