@@ -2988,7 +2988,7 @@ def write_main_sheet_compact(wb, prev_wb, stores: list[Store], metrics: dict[str
             put(row, cols_map.get("discount_delta"), diff(values.get("discount_rate"), prev_metric("营业数据", scope, "discount_rate", prev_row)), "0.0%")
             put(row, cols_map.get("orders_daily"), values.get("orders_daily"), "#,##0")
             put(row, cols_map.get("orders_growth"), growth(values.get("orders_daily"), prev_metric("营业数据", scope, "orders_daily", prev_row)), "0.0%")
-            put(row, cols_map.get("at"), values.get("at"), "0.00")
+            put(row, cols_map.get("at"), values.get("at"), "0.0")
             put(row, cols_map.get("at_delta"), diff(values.get("at"), prev_metric("营业数据", scope, "at", prev_row)), "0.0")
 
     for store in stores:
@@ -3164,6 +3164,8 @@ def write_main_sheet(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
     for row in ordered_store_rows(ws, operating_row_by_code, operating_row_by_name, stores) + [operating_total_row]:
         for col in [9, 10, 19, 20, 29, 30, 39, 40, 48, 49]:
             ws.cell(row, col).number_format = "#,##0"
+        for col in [11, 12, 21, 22, 31, 32, 41, 50]:
+            ws.cell(row, col).number_format = "0.0"
 
     def write_traffic(row: int, data: dict[str, Any], prev_row: int | None) -> None:
         total, mt, ele = data["total"], data["mt"], data["ele"]
@@ -4110,7 +4112,7 @@ def write_v2_compact(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
         cur_discount = data["total"].get("discount_rate")
         prev_at = previous_period_value(store, "total", "at")
         prev_discount = previous_period_value(store, "total", "discount_rate")
-        put(row, 3, cur_at, "0.00")
+        put(row, 3, cur_at, "0.0")
         put(row, 4, diff(cur_at, prev_at), "0.0")
         put(row, 5, cur_discount, "0.0%")
         put(row, 6, diff(cur_discount, prev_discount), "0.0%")
