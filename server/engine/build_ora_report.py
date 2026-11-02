@@ -2562,7 +2562,7 @@ def canonical_package(name: Any) -> str | None:
         cn = norm_product(canon)
         if cn == n or cn in n:
             return canon
-    if "套餐" in raw or "双杯" in raw or "+" in raw or "＋" in raw:
+    if "套餐" in raw or "双杯" in raw or "选" in raw or "+" in raw or "＋" in raw:
         return raw
     return None
 
