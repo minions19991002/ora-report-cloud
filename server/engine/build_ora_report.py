@@ -3029,8 +3029,7 @@ def write_main_sheet_compact(wb, prev_wb, stores: list[Store], metrics: dict[str
             values = data[scope]
             put(row, cols_map.get("sales"), values.get("sales"), "#,##0")
             put(row, cols_map.get("sales_daily"), values.get("sales_daily"), "#,##0")
-            base_key = "sales" if cols_map.get("sales") else "sales_daily"
-            put(row, cols_map.get("sales_growth"), growth(values.get(base_key), prev_metric("营业数据", scope, base_key, prev_row)), "0.0%")
+            put(row, cols_map.get("sales_growth"), growth(values.get("sales_daily"), prev_metric("营业数据", scope, "sales_daily", prev_row)), "0.0%")
             put(row, cols_map.get("discount_rate"), values.get("discount_rate"), "0.0%")
             put(row, cols_map.get("discount_delta"), diff(values.get("discount_rate"), prev_metric("营业数据", scope, "discount_rate", prev_row)), "0.0%")
             put(row, cols_map.get("orders_daily"), values.get("orders_daily"), "#,##0")
