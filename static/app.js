@@ -77,7 +77,6 @@ const progress = document.querySelector("#progress");
 let xlsxPromise = null;
 let xlsxWarningShown = false;
 const manuallyEditedDates = new Set();
-let dateInferenceRevision = 0;
 
 function log(message) {
   const stamp = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -254,124 +253,6 @@ function isIgnoredFile(name) {
   return /最新评分/i.test(name);
 }
 
-function parseDatesFromName(name) {
-  const fullDates = [...name.matchAll(/20\d{2}[-._]\d{1,2}[-._]\d{1,2}/g)].map((match) => match[0].replace(/[._]/g, "-"));
-  const eightDigitDates = [...name.matchAll(/(?<!\d)20\d{6}(?!\d)/g)].map((match) =>
-    `${match[0].slice(0, 4)}-${match[0].slice(4, 6)}-${match[0].slice(6, 8)}`
-  );
-  const compactRanges = [...name.matchAll(/(?<!\d)(\d{1,2})\.(\d{1,2})[-~](\d{1,2})\.(\d{1,2})(?!\d)/g)].flatMap((match) => {
-    const now = new Date();
-    const endYear = now.getFullYear() - (Number(match[3]) > now.getMonth() + 1 ? 1 : 0);
-    const startYear = endYear - (Number(match[1]) > Number(match[3]) ? 1 : 0);
-    return [`${startYear}-${match[1]}-${match[2]}`, `${endYear}-${match[3]}-${match[4]}`];
-  });
-  const monthRanges = [...name.matchAll(/(?:(20\d{2})[年._-]?)?(\d{1,2})月/g)].flatMap((match) => {
-    const month = Number(match[2]);
-    if (month < 1 || month > 12) return [];
-    const now = new Date();
-    const year = Number(match[1] || now.getFullYear() - (month > now.getMonth() + 1 ? 1 : 0));
-    const lastDay = new Date(year, month, 0).getDate();
-    return [`${year}-${month}-1`, `${year}-${month}-${lastDay}`];
-  });
-  return [...new Set([...fullDates, ...eightDigitDates, ...compactRanges, ...monthRanges])].map((date) => {
-    const [year, month, day] = date.split("-").map(Number);
-    return calendarDate(year, month, day);
-  }).filter(Boolean);
-}
-
-function calendarDate(year, month, day) {
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) return null;
-  return date.toISOString().slice(0, 10);
-}
-
-function dateRangeFromName(name) {
-  const dates = [...new Set(parseDatesFromName(name))].sort();
-  return dates.length === 2 ? { start: dates[0], end: dates[1] } : null;
-}
-
-function dateFromCell(cell) {
-  if (!cell) return null;
-  const value = cell.v;
-  if (value instanceof Date) return calendarDate(value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate());
-  if (typeof value === "number") {
-    if (value >= 20000101 && value <= 20991231) return dateFromCell({ v: String(value) });
-    const parsed = globalThis.XLSX.SSF.parse_date_code(value);
-    return parsed ? calendarDate(parsed.y, parsed.m, parsed.d) : null;
-  }
-  const text = String(value ?? "").trim();
-  const compact = text.match(/^(20\d{2})(\d{2})(\d{2})$/);
-  if (compact) return calendarDate(...compact.slice(1).map(Number));
-  const parts = text.match(/^(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})/);
-  return parts ? calendarDate(...parts.slice(1).map(Number)) : null;
-}
-
-async function dateRangeFromSource(file) {
-  if (!file || !(await ensureXlsxRuntime())) return null;
-  try {
-    const workbook = globalThis.XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-    let first = null;
-    let last = null;
-    for (const sheetName of workbook.SheetNames.slice(0, 3)) {
-      const sheet = workbook.Sheets[sheetName];
-      if (!sheet?.["!ref"]) continue;
-      const bounds = globalThis.XLSX.utils.decode_range(sheet["!ref"]);
-      let dateCol = null;
-      let headerRow = null;
-      for (let row = bounds.s.r; row <= Math.min(bounds.e.r, bounds.s.r + 5) && dateCol === null; row += 1) {
-        for (let col = bounds.s.c; col <= Math.min(bounds.e.c, bounds.s.c + 30); col += 1) {
-          const header = String(sheet[globalThis.XLSX.utils.encode_cell({ r: row, c: col })]?.v ?? "").trim();
-          if (["date_id", "日期", "统计日期"].includes(header)) {
-            dateCol = col;
-            headerRow = row;
-            break;
-          }
-        }
-      }
-      if (dateCol === null) continue;
-      for (let row = headerRow + 1; row <= bounds.e.r; row += 1) {
-        const date = dateFromCell(sheet[globalThis.XLSX.utils.encode_cell({ r: row, c: dateCol })]);
-        if (!date) continue;
-        if (!first || date < first) first = date;
-        if (!last || date > last) last = date;
-      }
-      if (first && last) break;
-    }
-    return first && last ? { start: first, end: last } : null;
-  } catch {
-    log(`未能读取日期列，改用文件名识别：${file.name}`);
-    return null;
-  }
-}
-
-function periodFromSheetName(name, referenceStart) {
-  const match = String(name).match(/^(\d{1,2})\.(\d{1,2})[-~～](\d{1,2})\.(\d{1,2})$/);
-  if (!match) return null;
-  let year = referenceStart ? Number(referenceStart.slice(0, 4)) : new Date().getFullYear();
-  let start = calendarDate(year, Number(match[1]), Number(match[2]));
-  if (referenceStart && start && start > referenceStart) {
-    year -= 1;
-    start = calendarDate(year, Number(match[1]), Number(match[2]));
-  }
-  const endYear = year + (Number(match[3]) < Number(match[1]) ? 1 : 0);
-  const end = calendarDate(endYear, Number(match[3]), Number(match[4]));
-  return start && end && start <= end ? { start, end } : null;
-}
-
-async function dateRangeFromPreviousReport(file, referenceStart) {
-  if (!file) return null;
-  if (await ensureXlsxRuntime()) {
-    try {
-      const workbook = globalThis.XLSX.read(await file.arrayBuffer(), { type: "array", bookSheets: true });
-      const datedSheet = workbook.SheetNames.map((name) => periodFromSheetName(name, referenceStart)).find(Boolean);
-      if (datedSheet) return datedSheet;
-    } catch {
-      log(`未能读取上一期报表的工作表日期：${file.name}`);
-    }
-  }
-  return dateRangeFromName(file.name);
-}
-
 function adjacentPeriod(period, direction) {
   const start = new Date(`${period.start}T00:00:00Z`);
   const end = new Date(`${period.end}T00:00:00Z`);
@@ -391,8 +272,13 @@ function latestCompleteWeek(lastDate) {
   return { start: monday.toISOString().slice(0, 10), end: sunday.toISOString().slice(0, 10) };
 }
 
-function periodDays(period) {
-  return Math.round((new Date(`${period.end}T00:00:00Z`) - new Date(`${period.start}T00:00:00Z`)) / 86400000) + 1;
+function recentCompleteWeek(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const yesterday = new Date(`${parts.year}-${parts.month}-${parts.day}T00:00:00Z`);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  return latestCompleteWeek(yesterday.toISOString().slice(0, 10));
 }
 
 function labelFromDates(start, end) {
@@ -442,25 +328,14 @@ function updatePeriod() {
   }
 }
 
-async function autoFillDates() {
-  const revision = ++dateInferenceRevision;
-  const dailyFile = filesByKey.get("oraDaily");
-  let sourceRange = await dateRangeFromSource(dailyFile);
-  if (!sourceRange) {
-    const sourceKeys = ["oraDaily", "mtStore", "eleStore", "mtOrder", "eleOrder", "mtProduct", "eleProduct"];
-    const namedRanges = sourceKeys.map((key) => dateRangeFromName(filesByKey.get(key)?.name ?? "")).filter(Boolean);
-    sourceRange = namedRanges.sort((a, b) => b.end.localeCompare(a.end) || periodDays(a) - periodDays(b))[0] ?? null;
-  }
-  const current = sourceRange ? latestCompleteWeek(sourceRange.end) : null;
-  const previousFromReport = current ? null : await dateRangeFromPreviousReport(filesByKey.get("previous"), null);
-  if (revision !== dateInferenceRevision) return;
-  const previous = current ? adjacentPeriod(current, -1)
-    : previousFromReport ? latestCompleteWeek(previousFromReport.end) : null;
+function autoFillDates(now = new Date()) {
+  const current = recentCompleteWeek(now);
+  const previous = adjacentPeriod(current, -1);
   for (const [element, value] of (
     [[currentStartDate, current?.start], [currentEndDate, current?.end],
       [previousStartDate, previous?.start], [previousEndDate, previous?.end]]
   )) {
-    if (value && !manuallyEditedDates.has(element.id)) element.value = value;
+    if (!manuallyEditedDates.has(element.id)) element.value = value;
   }
   updatePeriod();
 }
@@ -483,7 +358,7 @@ async function handleFiles(fileList) {
     log(`已按${result.method}匹配：${file.name} → ${result.item.title}`);
   }
   if (matched === 0 && files.length) log("没有匹配到标准源表。");
-  await autoFillDates();
+  autoFillDates();
   renderSlots();
 }
 
@@ -512,7 +387,7 @@ function renderSlots() {
       const selected = event.target.files?.[0];
       if (!selected) return;
       filesByKey.set(item.key, selected);
-      await autoFillDates();
+      autoFillDates();
       log(`已上传：${item.title} ← ${selected.name}`);
       renderSlots();
     });
@@ -698,16 +573,11 @@ previousStartDate.addEventListener("change", updatePeriod);
 previousEndDate.addEventListener("change", updatePeriod);
 generateBtn.addEventListener("click", generateReport);
 clearBtn.addEventListener("click", () => {
-  dateInferenceRevision += 1;
   manuallyEditedDates.clear();
   filesByKey.clear();
   logEl.textContent = "";
   progress.value = 0;
-  currentStartDate.value = "";
-  currentEndDate.value = "";
-  previousStartDate.value = "";
-  previousEndDate.value = "";
-  updatePeriod();
+  autoFillDates();
   renderSlots();
 });
 
@@ -729,4 +599,5 @@ dropzone.addEventListener("drop", (event) => {
   void handleFiles(event.dataTransfer.files);
 });
 
+autoFillDates();
 renderSlots();
