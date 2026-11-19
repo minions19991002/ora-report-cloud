@@ -74,6 +74,7 @@ class DistancePaidTotalsTest(unittest.TestCase):
             },
         }
         report.write_distance_and_paid(current, previous, distance, paid, self.stores)
+        report.apply_total_row_bold(current)
         ws = current["订单距离及实付区间"]
         for row in (7, 13):
             self.assertAlmostEqual(ws.cell(row, 3).value, 0.62)
@@ -81,6 +82,7 @@ class DistancePaidTotalsTest(unittest.TestCase):
             self.assertAlmostEqual(ws.cell(row, 14).value, 0.35)
             self.assertAlmostEqual(ws.cell(row, 25).value, 0.8)
             self.assertEqual(ws.cell(row, 3).number_format, "0.0%")
+            self.assertTrue(all(ws.cell(row, col).font.bold for col in (1, 3, 4, 5, 13, 14, 24, 25)))
 
         for row in (7, 13):
             prev.cell(row, 1).value = None
