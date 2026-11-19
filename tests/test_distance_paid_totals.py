@@ -94,6 +94,38 @@ class DistancePaidTotalsTest(unittest.TestCase):
             self.assertIsNone(without_prior.cell(row, 4).value)
             self.assertIsNone(without_prior.cell(row, 5).value)
 
+    def test_paid_order_counts_reach_dual_platform_total_row(self):
+        mt = pd.DataFrame({
+            "日期": ["2026-11-09"] * 3,
+            "美团门店ID": ["m1", "m1", "m2"],
+            "订单状态": ["已完成"] * 3,
+            "订单实付": [10, 25, 15],
+        })
+        ele = pd.DataFrame({
+            "日期": ["2026-11-09"],
+            "饿了么门店ID": ["e1"],
+            "订单状态": ["订单完结"],
+            "顾客实付": [35],
+        })
+        with patch.object(report, "read_excel", side_effect=lambda name: mt if name.startswith("美团") else ele), \
+                patch.object(report, "current_rows", side_effect=lambda df, _: df):
+            paid, _ = report.compute_paid_intervals(
+                {"m1": "S1", "m2": "S2"}, {"e1": "S1"}, self.stores
+            )
+
+        self.assertEqual(paid["S1"]["total"]["total_count"], 3)
+        self.assertEqual(paid["S1"]["total"]["0_20_count"], 1)
+        self.assertEqual(paid["S1"]["total"]["20_30_count"], 1)
+        self.assertEqual(paid["S1"]["total"]["gt30_count"], 1)
+        current = sample_sheet()
+        report.write_distance_and_paid(current, sample_sheet(), {}, paid, self.stores)
+        ws = current["订单距离及实付区间"]
+        self.assertAlmostEqual(ws["C13"].value, 0.5)
+        self.assertAlmostEqual(ws["F13"].value, 0.25)
+        self.assertAlmostEqual(ws["I13"].value, 0.25)
+        self.assertAlmostEqual(ws["N13"].value, 2 / 3)
+        self.assertAlmostEqual(ws["Y13"].value, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

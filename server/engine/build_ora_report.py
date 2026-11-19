@@ -2532,8 +2532,10 @@ def compute_paid_intervals(mt_to_code: dict[str, str], ele_to_code: dict[str, st
         result[code]["mt"] = mt_counts.get(code, {"0_20": 0.0, "20_30": 0.0, "gt30": 0.0, "total_count": 0, "0_20_count": 0, "20_30_count": 0, "gt30_count": 0})
         result[code]["ele"] = ele_counts.get(code, {"0_20": 0.0, "20_30": 0.0, "gt30": 0.0, "total_count": 0, "0_20_count": 0, "20_30_count": 0, "gt30_count": 0})
         total_count = result[code]["mt"]["total_count"] + result[code]["ele"]["total_count"]
+        result[code]["total"]["total_count"] = total_count
         for bucket, count_key in [("0_20", "0_20_count"), ("20_30", "20_30_count"), ("gt30", "gt30_count")]:
             count = result[code]["mt"].get(count_key, 0) + result[code]["ele"].get(count_key, 0)
+            result[code]["total"][count_key] = count
             result[code]["total"][bucket] = safe_div(count, total_count) or 0.0
     return result, audit
 
