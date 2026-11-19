@@ -1174,6 +1174,7 @@ DISTANCE_COLUMNS = {
     "[3.0,4.0Km)": ["[3.0,4.0Km)", "[3.0,4.0km)"],
     "[4.0,5.0Km)": ["[4.0,5.0Km)", "[4.0,5.0km)"],
     ">5.0Km": [">5.0Km", ">5.0km"],
+    "订单数": ["订单数"],
 }
 REVIEW_COUNT_COLUMNS = {
     "平台门店ID": ["平台门店ID", "门店ID", "门店编号"],
@@ -2390,7 +2391,7 @@ def compute_distance(mt_to_code: dict[str, str], ele_to_code: dict[str, str]) ->
         read_excel("ora_订单距离分布_2026-06-22.xlsx", sheet_name="订单分布"),
         DISTANCE_COLUMNS,
         source_name="ora_订单距离分布_2026-06-22.xlsx",
-        required=["平台门店ID", "平台"],
+        required=["平台门店ID", "平台", "订单数"],
     )
     df["_id"] = df["平台门店ID"].map(norm_id)
     result: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: {"mt": {}, "ele": {}, "total": {}})
@@ -2399,16 +2400,25 @@ def compute_distance(mt_to_code: dict[str, str], ele_to_code: dict[str, str]) ->
         code = mt_to_code.get(row["_id"]) if platform == "美团" else ele_to_code.get(row["_id"])
         if not code:
             continue
-        vals = {
+        shares = {
             "0_1": pct(row.get("[0,0.5Km)")) + pct(row.get("[0.5,0.8Km)")) + pct(row.get("[0.8,1.0Km)")),
             "1_3": pct(row.get("[1.0,2.0Km)")) + pct(row.get("[2.0,3.0Km)")),
             "gt3": pct(row.get("[3.0,4.0Km)")) + pct(row.get("[4.0,5.0Km)")) + pct(row.get(">5.0Km")),
         }
-        result[code]["mt" if platform == "美团" else "ele"] = vals
+        count = scalar_num(row.get("订单数"))
+        scope = "mt" if platform == "美团" else "ele"
+        data = result[code][scope]
+        data["total_count"] = data.get("total_count", 0.0) + count
+        for key, share in shares.items():
+            count_key = f"{key}_count"
+            data[count_key] = data.get(count_key, 0.0) + share * count
     for code, data in result.items():
-        for key in ["0_1", "1_3", "gt3"]:
-            parts = [data[scope].get(key) for scope in ("mt", "ele") if key in data[scope]]
-            data["total"][key] = sum(parts) / len(parts) if parts else 0.0
+        data["total"]["total_count"] = sum(data[scope].get("total_count", 0.0) for scope in ("mt", "ele"))
+        for key in ("0_1", "1_3", "gt3"):
+            count_key = f"{key}_count"
+            data["total"][count_key] = sum(data[scope].get(count_key, 0.0) for scope in ("mt", "ele"))
+            for scope in ("mt", "ele", "total"):
+                data[scope][key] = safe_div(data[scope].get(count_key, 0.0), data[scope].get("total_count", 0.0)) or 0.0
     return result
 
 
@@ -4435,6 +4445,38 @@ def write_distance_and_paid(wb, prev_wb, distance, paid, stores: list[Store]) ->
     for row in distance_rows + paid_rows:
         for col in pct_cols:
             ws.cell(row, col).number_format = "0.0%"
+
+    def total_row_for(sheet, title: str) -> int | None:
+        title_row = find_text_row(sheet, [title], max_col=8)
+        if not title_row:
+            return None
+        next_title = find_text_row(sheet, ["实付区间订单占比"], start_row=title_row + 1, max_col=8) if title == "订单距离分布" else None
+        for row in range(title_row + 1, next_title or (sheet.max_row or title_row) + 1):
+            if cell_text(sheet.cell(row, 1).value) == "总计":
+                return row
+        return None
+
+    for title, source, buckets in (
+        ("订单距离分布", distance, ("0_1", "1_3", "gt3")),
+        ("实付区间订单占比", paid, ("0_20", "20_30", "gt30")),
+    ):
+        total_row = total_row_for(ws, title)
+        if not total_row:
+            continue
+        prev_total_row = total_row_for(prev, title)
+        for scope, start_col, label_col in (("total", 3, 1), ("mt", 14, 13), ("ele", 25, 24)):
+            ws.cell(total_row, label_col).value = "总计"
+            denominator = sum(source.get(store.code, {}).get(scope, {}).get("total_count", 0.0) for store in stores)
+            for index, bucket in enumerate(buckets):
+                current_col = start_col + index * 3
+                prior_col = current_col + 1
+                delta_col = current_col + 2
+                numerator = sum(source.get(store.code, {}).get(scope, {}).get(f"{bucket}_count", 0.0) for store in stores)
+                current = safe_div(numerator, denominator)
+                previous = prev.cell(prev_total_row, current_col).value if prev_total_row else None
+                for col, value in ((current_col, current), (prior_col, previous), (delta_col, diff(current, previous))):
+                    write(ws.cell(total_row, col), value)
+                    ws.cell(total_row, col).number_format = "0.0%"
 
 
 def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg_qty, total_store_days, new_packages) -> None:
