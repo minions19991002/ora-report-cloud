@@ -845,7 +845,19 @@ def ensure_titled_store_rows(
         if header_row:
             end = contiguous_store_end(ws, header_row + 1, min(header_row + 100, ws.max_row or header_row), code_col, name_col)
             insert_at = max(end + 1, header_row + 1)
-    append_missing_store_rows(ws, stores, by_code, by_name, insert_at, code_col, name_col, **identity_kwargs)
+    closing_borders = [copy(ws.cell(insert_at - 1, col).border.bottom) for col in range(1, (ws.max_column or 1) + 1)]
+    inserted = append_missing_store_rows(ws, stores, by_code, by_name, insert_at, code_col, name_col, **identity_kwargs)
+    if inserted:
+        last_row = insert_at + inserted - 1
+        for col, bottom in enumerate(closing_borders, start=1):
+            if not bottom or not bottom.style:
+                continue
+            old_border = copy(ws.cell(insert_at - 1, col).border)
+            old_border.bottom = None
+            ws.cell(insert_at - 1, col).border = old_border
+            last_border = copy(ws.cell(last_row, col).border)
+            last_border.bottom = bottom
+            ws.cell(last_row, col).border = last_border
 
 
 def ensure_fixed_block_store_rows(
