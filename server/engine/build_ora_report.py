@@ -2542,14 +2542,21 @@ PACKAGE_ALIASES = {
 }
 
 
+def clean_product_name(name: Any) -> str:
+    cleaned = re.sub(r"\s+", "", str(name).strip())
+    if cleaned == "【当季新品】双杯尝鲜套餐1":
+        return "【当季新品】双杯尝鲜套餐"
+    return cleaned
+
+
 def norm_product(name: str) -> str:
-    return re.sub(r"\s+", "", str(name).strip().replace("(", "（").replace(")", "）"))
+    return clean_product_name(name).replace("(", "（").replace(")", "）")
 
 
 def canonical_package(name: Any) -> str | None:
     if pd.isna(name):
         return None
-    raw = str(name).strip()
+    raw = clean_product_name(name)
     n = norm_product(raw)
     if all(part in n for part in ["超大杯美式", "4选2"]):
         return "超大杯美式4选2"
@@ -2626,7 +2633,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
     def single_aggregate_from_ora_product() -> pd.DataFrame:
         df = period_rows(load_ora_product_table(), "date_id", START, END)
         df = df[df["sku_name"].notna()].copy()
-        df["_name"] = df["sku_name"].astype(str).str.strip()
+        df["_name"] = df["sku_name"].map(clean_product_name)
         df = df[(df["_name"] != "") & (df["_name"].str.lower() != "nan")].copy()
         df["_qty"] = to_num(df["quantity"])
         df["_sales"] = to_num(df["gross_amount"])
@@ -2654,7 +2661,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
             start,
             end,
         )
-        mt["_name"] = mt["商品名"].astype(str).str.strip()
+        mt["_name"] = mt["商品名"].map(clean_product_name)
         mt["_qty"] = to_num(mt["商品销量"])
         mt["_sales"] = to_num(mt["商品销售额"])
         mt = mt[(mt["_qty"] > 0) & (mt["_sales"] > 0)].copy()
@@ -2679,7 +2686,7 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
             start,
             end,
         )
-        ele["_name"] = ele["商品名称"].astype(str).str.strip()
+        ele["_name"] = ele["商品名称"].map(clean_product_name)
         ele["_qty"] = to_num(ele["销量"])
         ele["_sales"] = to_num(ele["销售额"])
         ele = ele[(ele["_qty"] > 0) & (ele["_sales"] > 0)].copy()
@@ -2728,7 +2735,8 @@ def compute_products(prev_wb, total_store_days: int) -> tuple[list[dict[str, Any
             and norm_product(str(name)) not in single_excluded_products
             and canonical_package(str(name)) is None
         ):
-            prev_single_qty[str(name)] = float(qty or 0)
+            cleaned_name = clean_product_name(name)
+            prev_single_qty[cleaned_name] = prev_single_qty.get(cleaned_name, 0.0) + float(qty or 0)
 
     rows: list[dict[str, Any]] = []
     denom = total_store_days or PERIOD_DAYS
@@ -4446,7 +4454,8 @@ def write_products(wb, prev_wb, single_rows, pkg_rows, prev_single_qty, prev_pkg
         ws.cell(row, 13).value = None
     # Previous current product list as auxiliary.
     for idx, row in enumerate(range(2, prev_total_row)):
-        ws.cell(row, 12).value = prev.cell(row, 3).value
+        previous_name = prev.cell(row, 3).value
+        ws.cell(row, 12).value = clean_product_name(previous_name) if previous_name else None
         ws.cell(row, 13).value = prev.cell(row, 4).value
     for idx, item in enumerate(single_rows, start=2):
         prev_qty = prev_single_qty.get(item["name"], 0.0)
