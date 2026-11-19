@@ -95,6 +95,24 @@ class V2TrafficLayoutTest(unittest.TestCase):
         self.assertEqual(ws["C43"].value, 150)
         self.assertIsNone(ws["I43"].value)
 
+    def test_discount_delta_reads_previous_v2_when_compact_period_has_no_total_rate(self):
+        prev_v2 = self.previous.create_sheet("V2")
+        prev_v2["A30"] = "客单折扣"
+        prev_v2["A31"] = "店号"
+        prev_v2["B31"] = "店名"
+        prev_v2["A32"] = "S01"
+        prev_v2["B32"] = "测试店"
+        prev_v2["E32"] = 0.27
+        prev_v2["A57"] = "总计"
+        prev_v2["E57"] = 0.28
+        book = v2_book("美团曝光人数_日均")
+        report.write_v2_compact(book, self.previous, [self.store], {"S01": self.data}, self.data)
+        ws = book["V2"]
+        self.assertAlmostEqual(ws["F23"].value, 0.03)
+        self.assertAlmostEqual(ws["H23"].value, 0.27)
+        self.assertAlmostEqual(ws["F39"].value, 0.02)
+        self.assertAlmostEqual(ws["H39"].value, 0.28)
+
 
 if __name__ == "__main__":
     unittest.main()

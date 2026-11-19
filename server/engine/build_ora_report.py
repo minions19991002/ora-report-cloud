@@ -4168,6 +4168,8 @@ def write_v2_compact(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
         cur_discount = data["total"].get("discount_rate")
         prev_at = previous_period_value(store, "total", "at")
         prev_discount = previous_period_value(store, "total", "discount_rate")
+        if prev_discount is None:
+            prev_discount = previous_v2_value("客单折扣", store, 5)
         put(row, 3, cur_at, "0.0")
         put(row, 4, diff(cur_at, prev_at), "0.0")
         put(row, 5, cur_discount, "0.0%")
