@@ -4171,16 +4171,36 @@ def write_v2_compact(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
     write_discount(find_section_total_row(ws, "客单折扣", 39), totals, None)
 
     def write_traffic(row: int, data: dict[str, Any], store: Store | None) -> None:
-        total = data["total"]
-        prev_exp = previous_v2_value("流量数据", store, 3)
-        prev_entry = previous_v2_value("流量数据", store, 5)
-        prev_order = previous_v2_value("流量数据", store, 7)
-        put(row, 3, total.get("exp_people_daily"), "#,##0")
-        put(row, 4, growth(total.get("exp_people_daily"), prev_exp), "0.0%")
-        put(row, 5, total.get("entry_rate"), "0.0%")
-        put(row, 6, diff(total.get("entry_rate"), prev_entry), "0.0%")
-        put(row, 7, total.get("order_rate"), "0.0%")
-        put(row, 8, diff(total.get("order_rate"), prev_order), "0.0%")
+        if cell_text(ws["C42"].value) != "美团曝光人数_日均":
+            total = data["total"]
+            prev_exp = previous_v2_value("流量数据", store, 3)
+            prev_entry = previous_v2_value("流量数据", store, 5)
+            prev_order = previous_v2_value("流量数据", store, 7)
+            put(row, 3, total.get("exp_people_daily"), "#,##0")
+            put(row, 4, growth(total.get("exp_people_daily"), prev_exp), "0.0%")
+            put(row, 5, total.get("entry_rate"), "0.0%")
+            put(row, 6, diff(total.get("entry_rate"), prev_entry), "0.0%")
+            put(row, 7, total.get("order_rate"), "0.0%")
+            put(row, 8, diff(total.get("order_rate"), prev_order), "0.0%")
+            return
+        prev_row = (
+            find_section_total_row(prev_period, "流量数据", 39)
+            if store is None else matched_row_by_store(store, *prev_period_maps["流量数据"])
+        )
+        for scope, start in (("mt", 3), ("ele", 9)):
+            values = data[scope]
+            prev_cols = prev_schema.get("流量数据", {}).get(scope, {})
+
+            def previous(key: str) -> Any:
+                col = prev_cols.get(key)
+                return get_prev(prev_period, prev_row, col) if prev_row and col else None
+
+            put(row, start, values.get("exp_people_daily"), "#,##0")
+            put(row, start + 1, growth(values.get("exp_people_daily"), previous("exp_people_daily")), "0.0%")
+            put(row, start + 2, values.get("entry_rate"), "0.0%")
+            put(row, start + 3, diff(values.get("entry_rate"), previous("entry_rate")), "0.0%")
+            put(row, start + 4, values.get("order_rate"), "0.0%")
+            put(row, start + 5, diff(values.get("order_rate"), previous("order_rate")), "0.0%")
 
     for store in stores:
         row = matched_row_by_store(store, *v2_maps["流量数据"])
