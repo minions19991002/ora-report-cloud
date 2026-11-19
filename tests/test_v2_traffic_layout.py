@@ -77,6 +77,17 @@ class V2TrafficLayoutTest(unittest.TestCase):
         self.assertEqual(ws["D43"].number_format, "0.0%")
         self.assertEqual(ws["J43"].number_format, "0.0%")
 
+    def test_shifted_traffic_section_still_uses_both_platforms(self):
+        book = v2_book("美团曝光人数_日均")
+        book["V2"].insert_rows(41, 18)
+        report.write_v2_compact(book, self.previous, [self.store], {"S01": self.data}, self.data)
+        ws = book["V2"]
+        self.assertEqual(ws["C60"].value, "美团曝光人数_日均")
+        self.assertEqual(ws["C61"].value, 100)
+        self.assertEqual(ws["I61"].value, 50)
+        self.assertEqual(ws["C77"].value, 100)
+        self.assertEqual(ws["I77"].value, 50)
+
     def test_legacy_v2_keeps_combined_six_columns(self):
         book = v2_book("曝光人数_日均")
         report.write_v2_compact(book, self.previous, [self.store], {"S01": self.data}, self.data)

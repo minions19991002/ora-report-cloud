@@ -4121,6 +4121,8 @@ def write_v2_compact(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
     score_start = (score_header + 1) if score_header else 85
     score_end = contiguous_store_end(ws, score_start, max(ws.max_row or score_start, score_start), 1, 2)
     score_maps = sheet_store_row_maps(ws, score_start, max(score_end, score_start - 1), 1, 2)
+    traffic_header_row = find_section_header_row(ws, "流量数据", 43, 1, 2)
+    split_traffic = cell_text(ws.cell(traffic_header_row, 3).value) == "美团曝光人数_日均"
 
     def put(row: int, col: int, value: Any, fmt: str | None = None) -> None:
         write(ws.cell(row, col), value)
@@ -4171,7 +4173,7 @@ def write_v2_compact(wb, prev_wb, stores: list[Store], metrics: dict[str, dict[s
     write_discount(find_section_total_row(ws, "客单折扣", 39), totals, None)
 
     def write_traffic(row: int, data: dict[str, Any], store: Store | None) -> None:
-        if cell_text(ws["C42"].value) != "美团曝光人数_日均":
+        if not split_traffic:
             total = data["total"]
             prev_exp = previous_v2_value("流量数据", store, 3)
             prev_entry = previous_v2_value("流量数据", store, 5)
